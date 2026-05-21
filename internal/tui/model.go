@@ -6,6 +6,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/yeniklas/terdut-tui/internal/api"
@@ -19,7 +21,17 @@ const (
 	sectionUsers
 )
 
-// tea.Msg types
+type mode int
+
+const (
+	modeDashboard mode = iota
+	modeDetail
+	modeComment
+	modeConfirmDelete
+	modeStats
+)
+
+// tea.Msg types — dashboard
 
 type connectedMsg struct{}
 type connectErrMsg struct{ err error }
@@ -29,28 +41,65 @@ type fetchDataErrMsg struct{ err error }
 type tickMsg time.Time
 type clearStatusMsg struct{}
 
+// tea.Msg types — detail
+
+type alertDetailFetchedMsg struct {
+	alert    api.Alert
+	comments []api.Comment
+}
+type alertDetailErrMsg struct{ err error }
+type actionErrMsg struct{ err error }
+type detailStatsFetchedMsg struct {
+	top    []api.TopAlert
+	byHour []api.HourStat
+	byDay  []api.DayStat
+}
+type detailStatsErrMsg struct{ err error }
+
 // Model holds all UI state.
+
 type Model struct {
 	client          *api.Client
 	serverURL       string
 	refreshInterval time.Duration
 
 	activeSection section
+	mode          mode
 	width         int
 	height        int
 
+	// Connection & dashboard
 	connected    bool
 	loading      bool
 	err          error
 	statusMsg    string
-
 	alerts       []api.Alert
 	stats        *api.AlertStats
-	filterStatus string // "firing", "resolved", or "" (all)
+	filterStatus string
+	alertTable   table.Model
 
-	alertTable table.Model
-	help       help.Model
-	keys       keyMap
+	// Detail view
+	selectedAlert  api.Alert
+	comments       []api.Comment
+	commentCursor  int
+	detailLoading  bool
+	detailViewport viewport.Model
+
+	// Comment compose
+	commentInput textinput.Model
+
+	// Confirm delete
+	pendingDeleteID int64
+
+	// Stats view
+	topAlerts    []api.TopAlert
+	hourStats    []api.HourStat
+	dayStats     []api.DayStat
+	statsLoading bool
+	statsViewport viewport.Model
+
+	help help.Model
+	keys keyMap
 }
 
 func NewModel(client *api.Client, serverURL string, refreshInterval time.Duration) Model {
@@ -63,14 +112,21 @@ func NewModel(client *api.Client, serverURL string, refreshInterval time.Duratio
 		Bold(true)
 	t.SetStyles(s)
 
+	ti := textinput.New()
+	ti.Placeholder = "type your comment…"
+	ti.CharLimit = 1000
+
 	return Model{
 		client:          client,
 		serverURL:       serverURL,
 		refreshInterval: refreshInterval,
 		activeSection:   sectionAlerts,
+		mode:            modeDashboard,
 		loading:         true,
 		filterStatus:    "firing",
+		commentCursor:   -1,
 		alertTable:      t,
+		commentInput:    ti,
 		help:            help.New(),
 		keys:            keys,
 	}
@@ -80,15 +136,42 @@ func (m Model) Init() tea.Cmd {
 	return connectCmd(m.client)
 }
 
-// rebuildTable updates the alert table columns, rows, and height to match current state.
+// rebuildTable updates alert table columns, rows, and height from current state.
 func (m *Model) rebuildTable() {
 	m.alertTable.SetColumns(alertColumns(m.width))
 	m.alertTable.SetRows(alertRows(m.alerts))
-	h := m.height - 8 // header + tabs + sep + stats + table-header + footer + 2 margins
+	h := m.height - 8
 	if h < 1 {
 		h = 1
 	}
 	m.alertTable.SetHeight(h)
+}
+
+// refreshDetailContent rebuilds the viewport content from selectedAlert + comments.
+func (m *Model) refreshDetailContent() {
+	if m.width == 0 {
+		return
+	}
+	content := buildDetailContent(m.selectedAlert, m.comments, m.commentCursor, m.width)
+	m.detailViewport.SetContent(content)
+}
+
+// refreshStatsContent rebuilds the stats viewport from loaded stats data.
+func (m *Model) refreshStatsContent() {
+	content := buildStatsContent(m.topAlerts, m.hourStats, m.dayStats, m.width)
+	m.statsViewport.SetContent(content)
+}
+
+// detailViewportHeight returns the detail viewport height for the current mode.
+func (m Model) detailViewportHeight() int {
+	h := m.height - 5
+	if m.mode == modeComment {
+		h -= 2 // separator + input line
+	}
+	if h < 1 {
+		h = 1
+	}
+	return h
 }
 
 func alertColumns(width int) []table.Column {
@@ -112,8 +195,7 @@ func alertRows(alerts []api.Alert) []table.Row {
 	now := time.Now()
 	rows := make([]table.Row, len(alerts))
 	for i, a := range alerts {
-		ack := a.AcknowledgedBy
-		rows[i] = table.Row{a.Name, a.Status, humanAgo(now, a.StartsAt), ack}
+		rows[i] = table.Row{a.Name, a.Status, humanAgo(now, a.StartsAt), a.AcknowledgedBy}
 	}
 	return rows
 }
@@ -173,6 +255,103 @@ func fetchStatsCmd(client *api.Client) tea.Cmd {
 			return fetchDataErrMsg{err}
 		}
 		return statsFetchedMsg{*stats}
+	}
+}
+
+func fetchAlertDetailCmd(client *api.Client, alertID int64) tea.Cmd {
+	return func() tea.Msg {
+		alert, err := client.GetAlert(alertID)
+		if err != nil {
+			return alertDetailErrMsg{err}
+		}
+		comments, err := client.GetComments(alertID)
+		if err != nil {
+			return alertDetailErrMsg{err}
+		}
+		return alertDetailFetchedMsg{alert: *alert, comments: comments}
+	}
+}
+
+func acknowledgeCmd(client *api.Client, alertID int64) tea.Cmd {
+	return func() tea.Msg {
+		alert, err := client.AcknowledgeAlert(alertID)
+		if err != nil {
+			return actionErrMsg{err}
+		}
+		comments, err := client.GetComments(alertID)
+		if err != nil {
+			return actionErrMsg{err}
+		}
+		return alertDetailFetchedMsg{alert: *alert, comments: comments}
+	}
+}
+
+func unacknowledgeCmd(client *api.Client, alertID int64) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.UnacknowledgeAlert(alertID); err != nil {
+			return actionErrMsg{err}
+		}
+		alert, err := client.GetAlert(alertID)
+		if err != nil {
+			return actionErrMsg{err}
+		}
+		comments, err := client.GetComments(alertID)
+		if err != nil {
+			return actionErrMsg{err}
+		}
+		return alertDetailFetchedMsg{alert: *alert, comments: comments}
+	}
+}
+
+func addCommentCmd(client *api.Client, alertID int64, content string) tea.Cmd {
+	return func() tea.Msg {
+		if _, err := client.AddComment(alertID, content); err != nil {
+			return actionErrMsg{err}
+		}
+		alert, err := client.GetAlert(alertID)
+		if err != nil {
+			return actionErrMsg{err}
+		}
+		comments, err := client.GetComments(alertID)
+		if err != nil {
+			return actionErrMsg{err}
+		}
+		return alertDetailFetchedMsg{alert: *alert, comments: comments}
+	}
+}
+
+func deleteCommentCmd(client *api.Client, alertID, commentID int64) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.DeleteComment(alertID, commentID); err != nil {
+			return actionErrMsg{err}
+		}
+		alert, err := client.GetAlert(alertID)
+		if err != nil {
+			return actionErrMsg{err}
+		}
+		comments, err := client.GetComments(alertID)
+		if err != nil {
+			return actionErrMsg{err}
+		}
+		return alertDetailFetchedMsg{alert: *alert, comments: comments}
+	}
+}
+
+func fetchDetailStatsCmd(client *api.Client) tea.Cmd {
+	return func() tea.Msg {
+		top, err := client.GetTopAlerts(10)
+		if err != nil {
+			return detailStatsErrMsg{err}
+		}
+		byHour, err := client.GetStatsByHour()
+		if err != nil {
+			return detailStatsErrMsg{err}
+		}
+		byDay, err := client.GetStatsByDay()
+		if err != nil {
+			return detailStatsErrMsg{err}
+		}
+		return detailStatsFetchedMsg{top: top, byHour: byHour, byDay: byDay}
 	}
 }
 

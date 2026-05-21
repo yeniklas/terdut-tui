@@ -35,7 +35,11 @@ var (
 			Foreground(colorFiring).
 			Bold(true)
 
-	styleFiring   = lipgloss.NewStyle().Foreground(colorFiring).Bold(true)
-	styleResolved = lipgloss.NewStyle().Foreground(colorResolved)
-	styleMuted    = lipgloss.NewStyle().Foreground(colorMuted)
+	styleFiring    = lipgloss.NewStyle().Foreground(colorFiring).Bold(true)
+	styleResolved  = lipgloss.NewStyle().Foreground(colorResolved)
+	styleMuted     = lipgloss.NewStyle().Foreground(colorMuted)
+	styleAlertName = lipgloss.NewStyle().Bold(true)
+	styleBold      = lipgloss.NewStyle().Bold(true)
+	styleSelected  = lipgloss.NewStyle().Foreground(colorPrimary).Bold(true)
+	styleAccent    = lipgloss.NewStyle().Foreground(colorAccent)
 )
