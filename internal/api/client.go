@@ -255,6 +255,47 @@ func (c *Client) ListUsers() ([]User, error) {
 	return users, c.do(req, &users)
 }
 
+func (c *Client) CreateUser(username, email string) (*User, error) {
+	body := struct {
+		Username string `json:"username"`
+		Email    string `json:"email"`
+	}{Username: username, Email: email}
+	req, err := c.newRequestWithBody(http.MethodPost, "/api/users", body)
+	if err != nil {
+		return nil, err
+	}
+	var user User
+	return &user, c.do(req, &user)
+}
+
+func (c *Client) DeleteUser(id int64) error {
+	req, err := c.newRequest(http.MethodDelete, fmt.Sprintf("/api/users/%d", id))
+	if err != nil {
+		return err
+	}
+	return c.do(req, nil)
+}
+
+func (c *Client) CreateAPIKey(userID int64, name string) (*APIKey, error) {
+	body := struct {
+		Name string `json:"name"`
+	}{Name: name}
+	req, err := c.newRequestWithBody(http.MethodPost, fmt.Sprintf("/api/users/%d/api-keys", userID), body)
+	if err != nil {
+		return nil, err
+	}
+	var key APIKey
+	return &key, c.do(req, &key)
+}
+
+func (c *Client) DeleteAPIKey(userID, keyID int64) error {
+	req, err := c.newRequest(http.MethodDelete, fmt.Sprintf("/api/users/%d/api-keys/%d", userID, keyID))
+	if err != nil {
+		return err
+	}
+	return c.do(req, nil)
+}
+
 // HealthCheck calls GET /healthz (unauthenticated path, no auth needed but we send it anyway).
 func (c *Client) HealthCheck() error {
 	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/healthz", nil)

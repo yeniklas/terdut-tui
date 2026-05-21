@@ -1,10 +1,13 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/yeniklas/terdut-tui/internal/api"
 )
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -15,6 +18,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rebuildTable()
 		m.rebuildScheduleTable()
 		m.rebuildUserPickerTable()
+		m.rebuildUserManageTable()
 		m.detailViewport.Width = m.width
 		m.detailViewport.Height = m.detailViewportHeight()
 		m.statsViewport.Width = m.width
@@ -119,7 +123,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.users = msg.users
 		m.usersLoading = false
 		m.rebuildUserPickerTable()
+		m.rebuildUserManageTable()
 		return m, nil
+
+	case apiKeyCreatedMsg:
+		m.revealedAPIKey = msg.key
+		m.mode = modeAPIKeyReveal
+		return m, nil
+
+	case apiKeyRevokedMsg:
+		m.statusMsg = "API key revoked"
+		m.mode = modeDashboard
+		return m, clearStatusCmd()
+
+	case userActionErrMsg:
+		m.usersLoading = false
+		m.statusMsg = "error: " + msg.err.Error()
+		m.mode = modeDashboard
+		return m, clearStatusCmd()
 
 	// ── Common ────────────────────────────────────────────────────────────
 
@@ -165,6 +186,27 @@ func (m Model) routeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m2, ourCmd := m.handleKey(msg)
 		return m2, tea.Batch(tableCmd, ourCmd)
 
+	case modeUserCreate:
+		var inputCmd tea.Cmd
+		m.userFormInputs[m.userFormFocus], inputCmd = m.userFormInputs[m.userFormFocus].Update(msg)
+		m2, ourCmd := m.handleKey(msg)
+		return m2, tea.Batch(inputCmd, ourCmd)
+
+	case modeAPIKeyCreate:
+		var inputCmd tea.Cmd
+		m.apiKeyNameInput, inputCmd = m.apiKeyNameInput.Update(msg)
+		m2, ourCmd := m.handleKey(msg)
+		return m2, tea.Batch(inputCmd, ourCmd)
+
+	case modeAPIKeyRevokeByID:
+		var inputCmd tea.Cmd
+		m.apiKeyRevokeInput, inputCmd = m.apiKeyRevokeInput.Update(msg)
+		m2, ourCmd := m.handleKey(msg)
+		return m2, tea.Batch(inputCmd, ourCmd)
+
+	case modeAPIKeyMenu, modeAPIKeyReveal:
+		return m.handleKey(msg)
+
 	default: // modeDashboard
 		if m.connected {
 			switch m.activeSection {
@@ -176,6 +218,11 @@ func (m Model) routeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			case sectionSchedule:
 				var tableCmd tea.Cmd
 				m.scheduleTable, tableCmd = m.scheduleTable.Update(msg)
+				m2, ourCmd := m.handleKey(msg)
+				return m2, tea.Batch(tableCmd, ourCmd)
+			case sectionUsers:
+				var tableCmd tea.Cmd
+				m.userManageTable, tableCmd = m.userManageTable.Update(msg)
 				m2, ourCmd := m.handleKey(msg)
 				return m2, tea.Batch(tableCmd, ourCmd)
 			}
@@ -196,6 +243,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.handleStatsKey(msg)
 	case modeScheduleUserPicker:
 		return m.handleUserPickerKey(msg)
+	case modeUserCreate:
+		return m.handleUserCreateKey(msg)
+	case modeAPIKeyMenu:
+		return m.handleAPIKeyMenuKey(msg)
+	case modeAPIKeyCreate:
+		return m.handleAPIKeyCreateKey(msg)
+	case modeAPIKeyReveal:
+		return m.handleAPIKeyRevealKey(msg)
+	case modeAPIKeyRevokeByID:
+		return m.handleAPIKeyRevokeKey(msg)
 	default:
 		return m.handleDashboardKey(msg)
 	}
@@ -217,6 +274,10 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			to := m.scheduleWindow.AddDate(0, 0, 13)
 			return m, fetchScheduleCmd(m.client, from, to)
 		}
+		if next == sectionUsers && len(m.users) == 0 {
+			m.usersLoading = true
+			return m, fetchUsersCmd(m.client)
+		}
 		return m, nil
 
 	case "r":
@@ -228,6 +289,10 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			from := m.scheduleWindow
 			to := m.scheduleWindow.AddDate(0, 0, 13)
 			return m, fetchScheduleCmd(m.client, from, to)
+		}
+		if m.activeSection == sectionUsers {
+			m.usersLoading = true
+			return m, fetchUsersCmd(m.client)
 		}
 		m.statusMsg = "Refreshing…"
 		return m, tea.Batch(
@@ -299,21 +364,59 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 
 	case "d":
-		if m.activeSection != sectionSchedule || !m.connected {
+		switch m.activeSection {
+		case sectionSchedule:
+			if !m.connected {
+				return m, nil
+			}
+			cursor := m.scheduleTable.Cursor()
+			if cursor >= len(m.scheduleDays) {
+				return m, nil
+			}
+			day := m.scheduleDays[cursor]
+			if day.entry == nil {
+				m.statusMsg = "no assignment to delete on this date"
+				return m, clearStatusCmd()
+			}
+			m.pendingDeleteEntry = day.entry
+			m.confirmTarget = confirmDeleteScheduleEntry
+			m.mode = modeConfirmDelete
+		case sectionUsers:
+			if !m.connected || len(m.users) == 0 {
+				return m, nil
+			}
+			cursor := m.userManageTable.Cursor()
+			if cursor >= len(m.users) {
+				return m, nil
+			}
+			m.selectedUser = m.users[cursor]
+			m.confirmTarget = confirmDeleteUser
+			m.mode = modeConfirmDelete
+		}
+		return m, nil
+
+	case "n":
+		if m.activeSection != sectionUsers || !m.connected {
 			return m, nil
 		}
-		cursor := m.scheduleTable.Cursor()
-		if cursor >= len(m.scheduleDays) {
+		m.userFormInputs[0].Reset()
+		m.userFormInputs[1].Reset()
+		m.userFormFocus = 0
+		m.userFormInputs[0].Focus()
+		m.userFormInputs[1].Blur()
+		m.mode = modeUserCreate
+		return m, nil
+
+	case "k":
+		if m.activeSection != sectionUsers || !m.connected || len(m.users) == 0 {
 			return m, nil
 		}
-		day := m.scheduleDays[cursor]
-		if day.entry == nil {
-			m.statusMsg = "no assignment to delete on this date"
-			return m, clearStatusCmd()
+		cursor := m.userManageTable.Cursor()
+		if cursor >= len(m.users) {
+			return m, nil
 		}
-		m.pendingDeleteEntry = day.entry
-		m.confirmTarget = confirmDeleteScheduleEntry
-		m.mode = modeConfirmDelete
+		m.selectedUser = m.users[cursor]
+		m.mode = modeAPIKeyMenu
 		return m, nil
 	}
 
@@ -443,12 +546,19 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			from := m.scheduleWindow
 			to := m.scheduleWindow.AddDate(0, 0, 13)
 			return m, deleteScheduleEntryCmd(m.client, entry.ID, from, to)
+		case confirmDeleteUser:
+			userID := m.selectedUser.ID
+			m.mode = modeDashboard
+			m.usersLoading = true
+			return m, deleteUserCmd(m.client, userID)
 		}
 	default:
 		switch m.confirmTarget {
 		case confirmDeleteComment:
 			m.mode = modeDetail
 		case confirmDeleteScheduleEntry:
+			m.mode = modeDashboard
+		case confirmDeleteUser:
 			m.mode = modeDashboard
 		}
 		m.pendingDeleteID = 0
@@ -492,6 +602,123 @@ func (m Model) handleUserPickerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.mode = modeDashboard
 		m.scheduleLoading = true
 		return m, assignScheduleCmd(m.client, user.ID, date, from, to)
+	}
+
+	return m, nil
+}
+
+// ── User management ───────────────────────────────────────────────────────────
+
+func (m Model) handleUserCreateKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.userFormInputs[0].Blur()
+		m.userFormInputs[1].Blur()
+		m.mode = modeDashboard
+		return m, nil
+
+	case "tab", "shift+tab":
+		m.userFormInputs[m.userFormFocus].Blur()
+		m.userFormFocus = (m.userFormFocus + 1) % 2
+		m.userFormInputs[m.userFormFocus].Focus()
+		return m, nil
+
+	case "enter":
+		username := strings.TrimSpace(m.userFormInputs[0].Value())
+		email := strings.TrimSpace(m.userFormInputs[1].Value())
+		if username == "" || email == "" {
+			m.statusMsg = "username and email are required"
+			return m, clearStatusCmd()
+		}
+		m.userFormInputs[0].Blur()
+		m.userFormInputs[1].Blur()
+		m.mode = modeDashboard
+		m.usersLoading = true
+		return m, createUserCmd(m.client, username, email)
+	}
+
+	return m, nil
+}
+
+func (m Model) handleAPIKeyMenuKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeDashboard
+		return m, nil
+
+	case "n":
+		m.apiKeyNameInput.Reset()
+		m.apiKeyNameInput.Focus()
+		m.mode = modeAPIKeyCreate
+		return m, nil
+
+	case "r":
+		m.apiKeyRevokeInput.Reset()
+		m.apiKeyRevokeInput.Focus()
+		m.mode = modeAPIKeyRevokeByID
+		return m, nil
+	}
+
+	return m, nil
+}
+
+func (m Model) handleAPIKeyCreateKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.apiKeyNameInput.Blur()
+		m.mode = modeAPIKeyMenu
+		return m, nil
+
+	case "enter":
+		name := strings.TrimSpace(m.apiKeyNameInput.Value())
+		if name == "" {
+			m.statusMsg = "key name is required"
+			return m, clearStatusCmd()
+		}
+		m.apiKeyNameInput.Blur()
+		m.mode = modeDashboard
+		return m, createAPIKeyCmd(m.client, m.selectedUser.ID, name)
+	}
+
+	return m, nil
+}
+
+func (m Model) handleAPIKeyRevealKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "c":
+		if err := clipboard.WriteAll(m.revealedAPIKey.Key); err != nil {
+			m.statusMsg = "clipboard error: " + err.Error()
+		} else {
+			m.statusMsg = "copied to clipboard"
+		}
+		return m, clearStatusCmd()
+
+	case "esc", "enter", "q":
+		m.revealedAPIKey = api.APIKey{}
+		m.mode = modeDashboard
+		return m, nil
+	}
+
+	return m, nil
+}
+
+func (m Model) handleAPIKeyRevokeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.apiKeyRevokeInput.Blur()
+		m.mode = modeAPIKeyMenu
+		return m, nil
+
+	case "enter":
+		raw := strings.TrimSpace(m.apiKeyRevokeInput.Value())
+		keyID, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || keyID <= 0 {
+			m.statusMsg = "invalid key ID — must be a positive integer"
+			return m, clearStatusCmd()
+		}
+		m.apiKeyRevokeInput.Blur()
+		m.mode = modeDashboard
+		return m, deleteAPIKeyCmd(m.client, m.selectedUser.ID, keyID)
 	}
 
 	return m, nil

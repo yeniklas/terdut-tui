@@ -32,6 +32,11 @@ const (
 	modeConfirmDelete
 	modeStats
 	modeScheduleUserPicker
+	modeUserCreate
+	modeAPIKeyMenu
+	modeAPIKeyCreate
+	modeAPIKeyReveal
+	modeAPIKeyRevokeByID
 )
 
 type confirmTarget int
@@ -39,6 +44,7 @@ type confirmTarget int
 const (
 	confirmDeleteComment confirmTarget = iota
 	confirmDeleteScheduleEntry
+	confirmDeleteUser
 )
 
 // ── Messages ───────────────────────────────────────────────────────────────
@@ -74,6 +80,11 @@ type scheduleFetchedMsg struct {
 type scheduleFetchErrMsg struct{ err error }
 type scheduleActionErrMsg struct{ err error }
 type usersFetchedMsg struct{ users []api.User }
+
+// user management
+type apiKeyCreatedMsg struct{ key api.APIKey }
+type apiKeyRevokedMsg struct{}
+type userActionErrMsg struct{ err error }
 
 // ── Model ──────────────────────────────────────────────────────────────────
 
@@ -133,9 +144,18 @@ type Model struct {
 	scheduleTable   table.Model
 
 	// User picker (schedule assignment)
-	users          []api.User
-	usersLoading   bool
+	users           []api.User
+	usersLoading    bool
 	userPickerTable table.Model
+
+	// User management section
+	userManageTable   table.Model
+	selectedUser      api.User
+	userFormInputs    [2]textinput.Model
+	userFormFocus     int
+	apiKeyNameInput   textinput.Model
+	apiKeyRevokeInput textinput.Model
+	revealedAPIKey    api.APIKey
 
 	help help.Model
 	keys keyMap
@@ -153,29 +173,52 @@ func NewModel(client *api.Client, serverURL string, refreshInterval time.Duratio
 	pickerT := table.New(table.WithFocused(true))
 	pickerT.SetStyles(ts)
 
+	manageT := table.New(table.WithFocused(true))
+	manageT.SetStyles(ts)
+
 	ti := textinput.New()
 	ti.Placeholder = "type your comment…"
 	ti.CharLimit = 1000
+
+	usernameIn := textinput.New()
+	usernameIn.Placeholder = "username"
+	usernameIn.CharLimit = 64
+
+	emailIn := textinput.New()
+	emailIn.Placeholder = "email"
+	emailIn.CharLimit = 128
+
+	keyNameIn := textinput.New()
+	keyNameIn.Placeholder = "key name (e.g. laptop)"
+	keyNameIn.CharLimit = 64
+
+	revokeIn := textinput.New()
+	revokeIn.Placeholder = "integer key ID"
+	revokeIn.CharLimit = 20
 
 	now := time.Now().UTC()
 	window := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 
 	return Model{
-		client:          client,
-		serverURL:       serverURL,
-		refreshInterval: refreshInterval,
-		activeSection:   sectionAlerts,
-		mode:            modeDashboard,
-		loading:         true,
-		filterStatus:    "firing",
-		commentCursor:   -1,
-		alertTable:      alertT,
-		commentInput:    ti,
-		scheduleWindow:  window,
-		scheduleTable:   schedT,
-		userPickerTable: pickerT,
-		help:            help.New(),
-		keys:            keys,
+		client:            client,
+		serverURL:         serverURL,
+		refreshInterval:   refreshInterval,
+		activeSection:     sectionAlerts,
+		mode:              modeDashboard,
+		loading:           true,
+		filterStatus:      "firing",
+		commentCursor:     -1,
+		alertTable:        alertT,
+		commentInput:      ti,
+		scheduleWindow:    window,
+		scheduleTable:     schedT,
+		userPickerTable:   pickerT,
+		userManageTable:   manageT,
+		userFormInputs:    [2]textinput.Model{usernameIn, emailIn},
+		apiKeyNameInput:   keyNameIn,
+		apiKeyRevokeInput: revokeIn,
+		help:              help.New(),
+		keys:              keys,
 	}
 }
 
@@ -227,6 +270,20 @@ func (m *Model) rebuildUserPickerTable() {
 		h = 1
 	}
 	m.userPickerTable.SetHeight(h)
+}
+
+func (m *Model) rebuildUserManageTable() {
+	m.userManageTable.SetColumns(userManageColumns(m.width))
+	rows := make([]table.Row, len(m.users))
+	for i, u := range m.users {
+		rows[i] = table.Row{u.Username, u.Email, u.CreatedAt.UTC().Format("2006-01-02")}
+	}
+	m.userManageTable.SetRows(rows)
+	h := m.height - 10
+	if h < 1 {
+		h = 1
+	}
+	m.userManageTable.SetHeight(h)
 }
 
 func (m *Model) refreshDetailContent() {
@@ -291,6 +348,20 @@ func userPickerColumns(width int) []table.Column {
 	return []table.Column{
 		{Title: "Username", Width: usernameW},
 		{Title: "Email", Width: emailW},
+	}
+}
+
+func userManageColumns(width int) []table.Column {
+	createdW := 12
+	usernameW := 25
+	emailW := width - usernameW - createdW - 8
+	if emailW < 15 {
+		emailW = 15
+	}
+	return []table.Column{
+		{Title: "Username", Width: usernameW},
+		{Title: "Email", Width: emailW},
+		{Title: "Created", Width: createdW},
 	}
 }
 
@@ -553,6 +624,51 @@ func fetchUsersCmd(client *api.Client) tea.Cmd {
 			return usersFetchedMsg{} // empty on error, statusMsg set elsewhere
 		}
 		return usersFetchedMsg{users: users}
+	}
+}
+
+func createUserCmd(client *api.Client, username, email string) tea.Cmd {
+	return func() tea.Msg {
+		if _, err := client.CreateUser(username, email); err != nil {
+			return userActionErrMsg{err}
+		}
+		users, err := client.ListUsers()
+		if err != nil {
+			return userActionErrMsg{err}
+		}
+		return usersFetchedMsg{users: users}
+	}
+}
+
+func deleteUserCmd(client *api.Client, userID int64) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.DeleteUser(userID); err != nil {
+			return userActionErrMsg{err}
+		}
+		users, err := client.ListUsers()
+		if err != nil {
+			return userActionErrMsg{err}
+		}
+		return usersFetchedMsg{users: users}
+	}
+}
+
+func createAPIKeyCmd(client *api.Client, userID int64, name string) tea.Cmd {
+	return func() tea.Msg {
+		key, err := client.CreateAPIKey(userID, name)
+		if err != nil {
+			return userActionErrMsg{err}
+		}
+		return apiKeyCreatedMsg{key: *key}
+	}
+}
+
+func deleteAPIKeyCmd(client *api.Client, userID, keyID int64) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.DeleteAPIKey(userID, keyID); err != nil {
+			return userActionErrMsg{err}
+		}
+		return apiKeyRevokedMsg{}
 	}
 }
 

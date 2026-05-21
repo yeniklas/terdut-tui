@@ -62,14 +62,28 @@ func (m Model) renderBody() string {
 	case modeComment:
 		return m.renderCommentCompose()
 	case modeConfirmDelete:
-		if m.confirmTarget == confirmDeleteComment {
+		switch m.confirmTarget {
+		case confirmDeleteComment:
 			return m.renderDetail()
+		case confirmDeleteUser:
+			return m.renderUsers()
+		default:
+			return m.renderSchedule()
 		}
-		return m.renderSchedule()
 	case modeStats:
 		return m.renderStats()
 	case modeScheduleUserPicker:
 		return m.renderUserPicker()
+	case modeUserCreate:
+		return m.renderUserCreate()
+	case modeAPIKeyMenu:
+		return m.renderAPIKeyMenu()
+	case modeAPIKeyCreate:
+		return m.renderAPIKeyCreate()
+	case modeAPIKeyReveal:
+		return m.renderAPIKeyReveal()
+	case modeAPIKeyRevokeByID:
+		return m.renderAPIKeyRevokeByID()
 	default:
 		return m.renderDashboard()
 	}
@@ -102,6 +116,8 @@ func (m Model) renderFooter() string {
 			} else {
 				deleteDesc = "schedule entry"
 			}
+		case confirmDeleteUser:
+			deleteDesc = fmt.Sprintf("user %s (cascades all API keys)", m.selectedUser.Username)
 		}
 		return "\n" + styleError.Render(fmt.Sprintf("  Delete %s? [y/N]", deleteDesc))
 
@@ -114,9 +130,44 @@ func (m Model) renderFooter() string {
 	case modeScheduleUserPicker:
 		return "\n" + styleFooter.Render("  j/k·navigate  enter·select  esc·cancel")
 
+	case modeUserCreate:
+		if m.statusMsg != "" {
+			return styleStatus.Render("  "+m.statusMsg) + "\n" + styleFooter.Render("  tab·next field  enter·create  esc·cancel")
+		}
+		return "\n" + styleFooter.Render("  tab·next field  enter·create  esc·cancel")
+
+	case modeAPIKeyMenu:
+		return "\n" + styleFooter.Render("  n·new key  r·revoke by ID  esc·back")
+
+	case modeAPIKeyCreate:
+		if m.statusMsg != "" {
+			return styleStatus.Render("  "+m.statusMsg) + "\n" + styleFooter.Render("  enter·create  esc·back")
+		}
+		return "\n" + styleFooter.Render("  enter·create  esc·back")
+
+	case modeAPIKeyReveal:
+		footer := "  c·copy to clipboard  esc·done"
+		if m.statusMsg != "" {
+			return styleStatus.Render("  "+m.statusMsg) + "\n" + styleFooter.Render(footer)
+		}
+		return "\n" + styleFooter.Render(footer)
+
+	case modeAPIKeyRevokeByID:
+		if m.statusMsg != "" {
+			return styleStatus.Render("  "+m.statusMsg) + "\n" + styleFooter.Render("  enter·revoke  esc·back")
+		}
+		return "\n" + styleFooter.Render("  enter·revoke  esc·back")
+
 	default:
 		if m.activeSection == sectionSchedule {
 			actions := styleFooter.Render("  +·assign  d·del  ←/→·shift week  tab·section  r·refresh  q·quit")
+			if m.statusMsg != "" {
+				return styleStatus.Render("  "+m.statusMsg) + "\n" + actions
+			}
+			return "\n" + actions
+		}
+		if m.activeSection == sectionUsers {
+			actions := styleFooter.Render("  n·new user  d·delete  k·API keys  r·refresh  tab·section  q·quit")
 			if m.statusMsg != "" {
 				return styleStatus.Render("  "+m.statusMsg) + "\n" + actions
 			}
@@ -144,7 +195,7 @@ func (m Model) renderDashboard() string {
 	case sectionSchedule:
 		return m.renderSchedule()
 	case sectionUsers:
-		return "\n" + styleMuted.Render("  User management — coming in Stage 5")
+		return m.renderUsers()
 	}
 	return ""
 }
@@ -422,6 +473,73 @@ func buildStatsContent(top []api.TopAlert, byHour []api.HourStat, byDay []api.Da
 	}
 
 	return b.String()
+}
+
+// ── Users ──────────────────────────────────────────────────────────────────
+
+func (m Model) renderUsers() string {
+	if m.usersLoading {
+		return "\n" + styleMuted.Render("  Loading users…")
+	}
+	if len(m.users) == 0 {
+		return "\n" + styleMuted.Render("  No users found. Press n to create one.")
+	}
+	return "\n" + m.userManageTable.View()
+}
+
+func (m Model) renderUserCreate() string {
+	header := "\n  " + styleBold.Render("Create new user") + "\n\n"
+	usernameLabel := "  Username:  "
+	emailLabel := "  Email:     "
+	if m.userFormFocus == 0 {
+		usernameLabel = styleSelected.Render("  Username:  ")
+	} else {
+		emailLabel = styleSelected.Render("  Email:     ")
+	}
+	return header +
+		usernameLabel + m.userFormInputs[0].View() + "\n" +
+		emailLabel + m.userFormInputs[1].View() + "\n"
+}
+
+func (m Model) renderAPIKeyMenu() string {
+	header := fmt.Sprintf("\n  API keys for %s\n", styleBold.Render(m.selectedUser.Username))
+	warning := styleMuted.Render("  Keys cannot be listed — only new keys can be created,\n  or existing ones revoked by their integer ID.\n")
+	options := "\n" +
+		styleAccent.Render("  n") + "  · create a new API key\n" +
+		styleAccent.Render("  r") + "  · revoke a key by ID\n"
+	return header + "\n" + warning + options
+}
+
+func (m Model) renderAPIKeyCreate() string {
+	header := fmt.Sprintf("\n  New API key for %s\n\n", styleBold.Render(m.selectedUser.Username))
+	label := styleSelected.Render("  Key name:  ")
+	return header + label + m.apiKeyNameInput.View() + "\n"
+}
+
+func (m Model) renderAPIKeyReveal() string {
+	sep := styleMuted.Render(strings.Repeat("─", m.width))
+	warn := styleError.Render("  !! COPY NOW — this key will NEVER be shown again !!")
+	nameLine := fmt.Sprintf("  Key name:  %s", styleBold.Render(m.revealedAPIKey.Name))
+	idLine := fmt.Sprintf("  Key ID:    %s   %s",
+		styleBold.Render(fmt.Sprintf("%d", m.revealedAPIKey.ID)),
+		styleMuted.Render("(save this — needed for future revocation)"))
+
+	keyLine := styleResolved.Render("  " + m.revealedAPIKey.Key)
+
+	return "\n" + sep + "\n\n" +
+		warn + "\n\n" +
+		nameLine + "\n" +
+		idLine + "\n\n" +
+		styleMuted.Render("  Key value:") + "\n" +
+		keyLine + "\n\n" +
+		sep + "\n"
+}
+
+func (m Model) renderAPIKeyRevokeByID() string {
+	header := fmt.Sprintf("\n  Revoke API key for %s\n", styleBold.Render(m.selectedUser.Username))
+	hint := styleMuted.Render("  Enter the integer key ID (shown when the key was created).\n")
+	label := styleSelected.Render("  Key ID:  ")
+	return header + "\n" + hint + "\n" + label + m.apiKeyRevokeInput.View() + "\n"
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
