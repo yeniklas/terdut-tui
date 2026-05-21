@@ -24,11 +24,7 @@ func (m Model) View() string {
 
 func (m Model) renderHeader() string {
 	title := styleHeader.Render("terdut-tui")
-	right := ""
-	if m.serverURL != "" {
-		right = styleMuted.Render(m.serverURL)
-	}
-
+	right := styleMuted.Render(m.serverURL)
 	gap := m.width - lipgloss.Width(title) - lipgloss.Width(right)
 	if gap < 0 {
 		gap = 0
@@ -45,43 +41,83 @@ func (m Model) renderTabs() string {
 			tabs = append(tabs, styleTabInactive.Render(name))
 		}
 	}
-	line := strings.Repeat("─", m.width)
-	return strings.Join(tabs, "") + "\n" + styleMuted.Render(line)
+	sep := styleMuted.Render(strings.Repeat("─", m.width))
+	return strings.Join(tabs, "") + "\n" + sep
 }
 
 func (m Model) renderBody() string {
-	bodyHeight := m.height - 5 // header + tabs + separator + footer + help
-	if bodyHeight < 1 {
-		bodyHeight = 1
-	}
-
-	var content string
 	if m.err != nil {
-		content = styleError.Render(fmt.Sprintf("Error: %v", m.err))
-	} else if !m.connected {
-		content = styleMuted.Render("Connecting…")
-	} else if m.statusMsg != "" {
-		content = styleStatus.Render(m.statusMsg)
-	} else {
-		switch m.activeSection {
-		case sectionAlerts:
-			content = styleMuted.Render("Alert dashboard — coming in Stage 2")
-		case sectionSchedule:
-			content = styleMuted.Render("On-call schedule — coming in Stage 4")
-		case sectionUsers:
-			content = styleMuted.Render("User management — coming in Stage 5")
-		}
+		return "\n" + styleError.Render(fmt.Sprintf("  Error: %v", m.err)) +
+			"\n" + styleMuted.Render("  Press r to retry.")
+	}
+	if !m.connected {
+		return "\n" + styleMuted.Render("  Connecting…")
 	}
 
-	lines := strings.Split(content, "\n")
-	padding := (bodyHeight - len(lines)) / 2
-	if padding < 0 {
-		padding = 0
+	switch m.activeSection {
+	case sectionAlerts:
+		return m.renderAlerts()
+	case sectionSchedule:
+		return "\n" + styleMuted.Render("  On-call schedule — coming in Stage 4")
+	case sectionUsers:
+		return "\n" + styleMuted.Render("  User management — coming in Stage 5")
 	}
-	return strings.Repeat("\n", padding) + content
+	return ""
+}
+
+func (m Model) renderAlerts() string {
+	statsBar := m.renderStatsBar()
+	var content string
+	if m.loading && len(m.alerts) == 0 {
+		content = styleMuted.Render("  Loading alerts…")
+	} else if len(m.alerts) == 0 {
+		label := m.filterStatus
+		if label == "" {
+			label = "all"
+		}
+		content = styleMuted.Render(fmt.Sprintf("  No %s alerts.", label))
+	} else {
+		content = m.alertTable.View()
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, statsBar, content)
+}
+
+func (m Model) renderStatsBar() string {
+	total, firing, resolved := 0, 0, 0
+	if m.stats != nil {
+		total = m.stats.Total
+		firing = m.stats.Firing
+		resolved = m.stats.Resolved
+	}
+
+	filterLabel := m.filterStatus
+	if filterLabel == "" {
+		filterLabel = "all"
+	}
+
+	left := fmt.Sprintf("  Total: %d  %s  %s",
+		total,
+		styleFiring.Render(fmt.Sprintf("Firing: %d", firing)),
+		styleResolved.Render(fmt.Sprintf("Resolved: %d", resolved)),
+	)
+	right := styleMuted.Render(fmt.Sprintf("filter: %s  [f]  ", filterLabel))
+
+	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 0 {
+		gap = 0
+	}
+	return left + strings.Repeat(" ", gap) + right
 }
 
 func (m Model) renderFooter() string {
-	helpView := m.help.ShortHelpView(m.keys.ShortHelp())
-	return "\n" + styleFooter.Render(helpView)
+	helpView := styleFooter.Render(m.help.ShortHelpView(m.keys.ShortHelp()))
+	if m.statusMsg != "" {
+		status := styleStatus.Render(m.statusMsg)
+		gap := m.width - lipgloss.Width(status) - lipgloss.Width(helpView)
+		if gap < 0 {
+			gap = 0
+		}
+		return "\n" + status + strings.Repeat(" ", gap) + helpView
+	}
+	return "\n" + helpView
 }

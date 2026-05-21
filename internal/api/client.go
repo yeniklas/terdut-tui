@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -56,6 +58,38 @@ func (c *Client) do(req *http.Request, out any) error {
 		return json.NewDecoder(resp.Body).Decode(out)
 	}
 	return nil
+}
+
+// ListAlerts fetches alerts from the server. status may be "firing", "resolved", or "" for all.
+func (c *Client) ListAlerts(status string, limit int) ([]Alert, error) {
+	q := url.Values{}
+	if status != "" {
+		q.Set("status", status)
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	path := "/api/alerts"
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+
+	req, err := c.newRequest(http.MethodGet, path)
+	if err != nil {
+		return nil, err
+	}
+	var alerts []Alert
+	return alerts, c.do(req, &alerts)
+}
+
+// GetAlertStats fetches aggregate alert counts.
+func (c *Client) GetAlertStats() (*AlertStats, error) {
+	req, err := c.newRequest(http.MethodGet, "/api/stats/alerts")
+	if err != nil {
+		return nil, err
+	}
+	var stats AlertStats
+	return &stats, c.do(req, &stats)
 }
 
 // HealthCheck calls GET /healthz (unauthenticated path, no auth needed but we send it anyway).
