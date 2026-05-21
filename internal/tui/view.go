@@ -62,9 +62,14 @@ func (m Model) renderBody() string {
 	case modeComment:
 		return m.renderCommentCompose()
 	case modeConfirmDelete:
-		return m.renderDetail()
+		if m.confirmTarget == confirmDeleteComment {
+			return m.renderDetail()
+		}
+		return m.renderSchedule()
 	case modeStats:
 		return m.renderStats()
+	case modeScheduleUserPicker:
+		return m.renderUserPicker()
 	default:
 		return m.renderDashboard()
 	}
@@ -83,11 +88,22 @@ func (m Model) renderFooter() string {
 		return "\n" + styleFooter.Render("  enter·submit  esc·cancel")
 
 	case modeConfirmDelete:
-		commentInfo := ""
-		if m.commentCursor >= 0 && m.commentCursor < len(m.comments) {
-			commentInfo = fmt.Sprintf(" by %s", m.comments[m.commentCursor].Username)
+		var deleteDesc string
+		switch m.confirmTarget {
+		case confirmDeleteComment:
+			if m.commentCursor >= 0 && m.commentCursor < len(m.comments) {
+				deleteDesc = fmt.Sprintf("comment by %s", m.comments[m.commentCursor].Username)
+			} else {
+				deleteDesc = "comment"
+			}
+		case confirmDeleteScheduleEntry:
+			if m.pendingDeleteEntry != nil {
+				deleteDesc = fmt.Sprintf("on-call for %s (%s)", m.pendingDeleteEntry.Date, m.pendingDeleteEntry.Username)
+			} else {
+				deleteDesc = "schedule entry"
+			}
 		}
-		return "\n" + styleError.Render(fmt.Sprintf("  Delete comment%s? [y/N]", commentInfo))
+		return "\n" + styleError.Render(fmt.Sprintf("  Delete %s? [y/N]", deleteDesc))
 
 	case modeStats:
 		if m.statusMsg != "" {
@@ -95,7 +111,17 @@ func (m Model) renderFooter() string {
 		}
 		return "\n" + styleFooter.Render("  esc·back")
 
+	case modeScheduleUserPicker:
+		return "\n" + styleFooter.Render("  j/k·navigate  enter·select  esc·cancel")
+
 	default:
+		if m.activeSection == sectionSchedule {
+			actions := styleFooter.Render("  +·assign  d·del  ←/→·shift week  tab·section  r·refresh  q·quit")
+			if m.statusMsg != "" {
+				return styleStatus.Render("  "+m.statusMsg) + "\n" + actions
+			}
+			return "\n" + actions
+		}
 		helpView := styleFooter.Render(m.help.ShortHelpView(m.keys.ShortHelp()))
 		if m.statusMsg != "" {
 			status := styleStatus.Render(m.statusMsg)
@@ -116,11 +142,62 @@ func (m Model) renderDashboard() string {
 	case sectionAlerts:
 		return m.renderAlerts()
 	case sectionSchedule:
-		return "\n" + styleMuted.Render("  On-call schedule — coming in Stage 4")
+		return m.renderSchedule()
 	case sectionUsers:
 		return "\n" + styleMuted.Render("  User management — coming in Stage 5")
 	}
 	return ""
+}
+
+// ── Schedule ───────────────────────────────────────────────────────────────
+
+func (m Model) renderSchedule() string {
+	if m.scheduleLoading {
+		return "\n" + styleMuted.Render("  Loading schedule…")
+	}
+
+	// On-call header
+	var onCallLine string
+	if m.currentOnCall != nil {
+		onCallLine = fmt.Sprintf("  On-call today: %s",
+			styleAlertName.Render(m.currentOnCall.Username))
+	} else {
+		onCallLine = styleMuted.Render("  On-call today: nobody scheduled")
+	}
+
+	// Window label
+	from := m.scheduleWindow
+	to := m.scheduleWindow.AddDate(0, 0, 13)
+	windowLabel := styleMuted.Render(fmt.Sprintf("  %s — %s",
+		from.Format("Jan 02"), to.Format("Jan 02, 2006")))
+
+	gap := m.width - lipgloss.Width(onCallLine) - lipgloss.Width(windowLabel)
+	if gap < 0 {
+		gap = 0
+	}
+	header := "\n" + onCallLine + strings.Repeat(" ", gap) + windowLabel + "\n"
+	return header + m.scheduleTable.View()
+}
+
+func (m Model) renderUserPicker() string {
+	if m.usersLoading {
+		return "\n" + styleMuted.Render("  Loading users…")
+	}
+
+	selectedDate := ""
+	cursor := m.scheduleTable.Cursor()
+	if cursor < len(m.scheduleDays) {
+		d := m.scheduleDays[cursor]
+		if d.date.Format("2006-01-02") == time.Now().UTC().Format("2006-01-02") {
+			selectedDate = "Today (" + d.date.Format("Mon") + ")"
+		} else {
+			selectedDate = d.date.Format("Jan 02 (Mon)")
+		}
+	}
+
+	header := fmt.Sprintf("\n  Assign on-call for %s — select a user:\n\n",
+		styleBold.Render(selectedDate))
+	return header + m.userPickerTable.View()
 }
 
 func (m Model) renderAlerts() string {

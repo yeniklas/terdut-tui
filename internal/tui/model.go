@@ -13,6 +13,8 @@ import (
 	"github.com/yeniklas/terdut-tui/internal/api"
 )
 
+// ── Enums ──────────────────────────────────────────────────────────────────
+
 type section int
 
 const (
@@ -29,10 +31,19 @@ const (
 	modeComment
 	modeConfirmDelete
 	modeStats
+	modeScheduleUserPicker
 )
 
-// tea.Msg types — dashboard
+type confirmTarget int
 
+const (
+	confirmDeleteComment confirmTarget = iota
+	confirmDeleteScheduleEntry
+)
+
+// ── Messages ───────────────────────────────────────────────────────────────
+
+// dashboard
 type connectedMsg struct{}
 type connectErrMsg struct{ err error }
 type alertsFetchedMsg struct{ alerts []api.Alert }
@@ -41,8 +52,7 @@ type fetchDataErrMsg struct{ err error }
 type tickMsg time.Time
 type clearStatusMsg struct{}
 
-// tea.Msg types — detail
-
+// detail
 type alertDetailFetchedMsg struct {
 	alert    api.Alert
 	comments []api.Comment
@@ -56,7 +66,21 @@ type detailStatsFetchedMsg struct {
 }
 type detailStatsErrMsg struct{ err error }
 
-// Model holds all UI state.
+// schedule
+type scheduleFetchedMsg struct {
+	entries []api.ScheduleEntry
+	current *api.ScheduleEntry
+}
+type scheduleFetchErrMsg struct{ err error }
+type scheduleActionErrMsg struct{ err error }
+type usersFetchedMsg struct{ users []api.User }
+
+// ── Model ──────────────────────────────────────────────────────────────────
+
+type scheduleDay struct {
+	date  time.Time
+	entry *api.ScheduleEntry
+}
 
 type Model struct {
 	client          *api.Client
@@ -78,7 +102,7 @@ type Model struct {
 	filterStatus string
 	alertTable   table.Model
 
-	// Detail view
+	// Detail
 	selectedAlert  api.Alert
 	comments       []api.Comment
 	commentCursor  int
@@ -89,32 +113,52 @@ type Model struct {
 	commentInput textinput.Model
 
 	// Confirm delete
-	pendingDeleteID int64
+	confirmTarget       confirmTarget
+	pendingDeleteID     int64          // comment ID
+	pendingDeleteEntry  *api.ScheduleEntry
 
-	// Stats view
-	topAlerts    []api.TopAlert
-	hourStats    []api.HourStat
-	dayStats     []api.DayStat
-	statsLoading bool
+	// Stats
+	topAlerts     []api.TopAlert
+	hourStats     []api.HourStat
+	dayStats      []api.DayStat
+	statsLoading  bool
 	statsViewport viewport.Model
+
+	// Schedule
+	scheduleWindow  time.Time
+	scheduleEntries []api.ScheduleEntry
+	scheduleDays    []scheduleDay
+	currentOnCall   *api.ScheduleEntry
+	scheduleLoading bool
+	scheduleTable   table.Model
+
+	// User picker (schedule assignment)
+	users          []api.User
+	usersLoading   bool
+	userPickerTable table.Model
 
 	help help.Model
 	keys keyMap
 }
 
 func NewModel(client *api.Client, serverURL string, refreshInterval time.Duration) Model {
-	t := table.New(table.WithFocused(true))
-	s := table.DefaultStyles()
-	s.Header = s.Header.Bold(true)
-	s.Selected = s.Selected.
-		Foreground(lipgloss.Color("0")).
-		Background(colorPrimary).
-		Bold(true)
-	t.SetStyles(s)
+	ts := defaultTableStyles()
+
+	alertT := table.New(table.WithFocused(true))
+	alertT.SetStyles(ts)
+
+	schedT := table.New(table.WithFocused(true))
+	schedT.SetStyles(ts)
+
+	pickerT := table.New(table.WithFocused(true))
+	pickerT.SetStyles(ts)
 
 	ti := textinput.New()
 	ti.Placeholder = "type your comment…"
 	ti.CharLimit = 1000
+
+	now := time.Now().UTC()
+	window := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 
 	return Model{
 		client:          client,
@@ -125,8 +169,11 @@ func NewModel(client *api.Client, serverURL string, refreshInterval time.Duratio
 		loading:         true,
 		filterStatus:    "firing",
 		commentCursor:   -1,
-		alertTable:      t,
+		alertTable:      alertT,
 		commentInput:    ti,
+		scheduleWindow:  window,
+		scheduleTable:   schedT,
+		userPickerTable: pickerT,
 		help:            help.New(),
 		keys:            keys,
 	}
@@ -136,7 +183,18 @@ func (m Model) Init() tea.Cmd {
 	return connectCmd(m.client)
 }
 
-// rebuildTable updates alert table columns, rows, and height from current state.
+// ── Table rebuilders ───────────────────────────────────────────────────────
+
+func defaultTableStyles() table.Styles {
+	s := table.DefaultStyles()
+	s.Header = s.Header.Bold(true)
+	s.Selected = s.Selected.
+		Foreground(lipgloss.Color("0")).
+		Background(colorPrimary).
+		Bold(true)
+	return s
+}
+
 func (m *Model) rebuildTable() {
 	m.alertTable.SetColumns(alertColumns(m.width))
 	m.alertTable.SetRows(alertRows(m.alerts))
@@ -147,32 +205,53 @@ func (m *Model) rebuildTable() {
 	m.alertTable.SetHeight(h)
 }
 
-// refreshDetailContent rebuilds the viewport content from selectedAlert + comments.
+func (m *Model) rebuildScheduleTable() {
+	m.scheduleTable.SetColumns(scheduleColumns(m.width))
+	m.scheduleTable.SetRows(scheduleRows(m.scheduleDays))
+	h := m.height - 10
+	if h < 1 {
+		h = 1
+	}
+	m.scheduleTable.SetHeight(h)
+}
+
+func (m *Model) rebuildUserPickerTable() {
+	m.userPickerTable.SetColumns(userPickerColumns(m.width))
+	rows := make([]table.Row, len(m.users))
+	for i, u := range m.users {
+		rows[i] = table.Row{u.Username, u.Email}
+	}
+	m.userPickerTable.SetRows(rows)
+	h := m.height - 10
+	if h < 1 {
+		h = 1
+	}
+	m.userPickerTable.SetHeight(h)
+}
+
 func (m *Model) refreshDetailContent() {
 	if m.width == 0 {
 		return
 	}
-	content := buildDetailContent(m.selectedAlert, m.comments, m.commentCursor, m.width)
-	m.detailViewport.SetContent(content)
+	m.detailViewport.SetContent(buildDetailContent(m.selectedAlert, m.comments, m.commentCursor, m.width))
 }
 
-// refreshStatsContent rebuilds the stats viewport from loaded stats data.
 func (m *Model) refreshStatsContent() {
-	content := buildStatsContent(m.topAlerts, m.hourStats, m.dayStats, m.width)
-	m.statsViewport.SetContent(content)
+	m.statsViewport.SetContent(buildStatsContent(m.topAlerts, m.hourStats, m.dayStats, m.width))
 }
 
-// detailViewportHeight returns the detail viewport height for the current mode.
 func (m Model) detailViewportHeight() int {
 	h := m.height - 5
 	if m.mode == modeComment {
-		h -= 2 // separator + input line
+		h -= 2
 	}
 	if h < 1 {
 		h = 1
 	}
 	return h
 }
+
+// ── Column definitions ─────────────────────────────────────────────────────
 
 func alertColumns(width int) []table.Column {
 	nameW := width/2 - 8
@@ -191,6 +270,32 @@ func alertColumns(width int) []table.Column {
 	}
 }
 
+func scheduleColumns(width int) []table.Column {
+	dateW := 16
+	onCallW := width - dateW - 6
+	if onCallW < 15 {
+		onCallW = 15
+	}
+	return []table.Column{
+		{Title: "Date", Width: dateW},
+		{Title: "On-Call", Width: onCallW},
+	}
+}
+
+func userPickerColumns(width int) []table.Column {
+	usernameW := 25
+	emailW := width - usernameW - 6
+	if emailW < 15 {
+		emailW = 15
+	}
+	return []table.Column{
+		{Title: "Username", Width: usernameW},
+		{Title: "Email", Width: emailW},
+	}
+}
+
+// ── Row builders ───────────────────────────────────────────────────────────
+
 func alertRows(alerts []api.Alert) []table.Row {
 	now := time.Now()
 	rows := make([]table.Row, len(alerts))
@@ -199,6 +304,44 @@ func alertRows(alerts []api.Alert) []table.Row {
 	}
 	return rows
 }
+
+func scheduleRows(days []scheduleDay) []table.Row {
+	today := time.Now().UTC().Format("2006-01-02")
+	rows := make([]table.Row, len(days))
+	for i, d := range days {
+		dateStr := d.date.Format("2006-01-02")
+		label := d.date.Format("Jan 02  Mon")
+		if dateStr == today {
+			label = "Today   " + d.date.Format("Mon")
+		}
+		onCall := "—"
+		if d.entry != nil {
+			onCall = d.entry.Username
+		}
+		rows[i] = table.Row{label, onCall}
+	}
+	return rows
+}
+
+func buildScheduleDays(window time.Time, entries []api.ScheduleEntry) []scheduleDay {
+	entryMap := make(map[string]api.ScheduleEntry, len(entries))
+	for _, e := range entries {
+		entryMap[e.Date] = e
+	}
+	days := make([]scheduleDay, 14)
+	for i := range days {
+		date := window.AddDate(0, 0, i)
+		day := scheduleDay{date: date}
+		if e, ok := entryMap[date.Format("2006-01-02")]; ok {
+			e2 := e
+			day.entry = &e2
+		}
+		days[i] = day
+	}
+	return days
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
 
 func humanAgo(now, t time.Time) string {
 	d := now.Sub(t)
@@ -227,7 +370,7 @@ func humanAgo(now, t time.Time) string {
 	}
 }
 
-// Command constructors
+// ── Commands ───────────────────────────────────────────────────────────────
 
 func connectCmd(client *api.Client) tea.Cmd {
 	return func() tea.Msg {
@@ -352,6 +495,64 @@ func fetchDetailStatsCmd(client *api.Client) tea.Cmd {
 			return detailStatsErrMsg{err}
 		}
 		return detailStatsFetchedMsg{top: top, byHour: byHour, byDay: byDay}
+	}
+}
+
+func fetchScheduleCmd(client *api.Client, from, to time.Time) tea.Cmd {
+	return func() tea.Msg {
+		entries, err := client.GetSchedule(from.Format("2006-01-02"), to.Format("2006-01-02"))
+		if err != nil {
+			return scheduleFetchErrMsg{err}
+		}
+		current, err := client.GetCurrentOnCall()
+		if err != nil {
+			return scheduleFetchErrMsg{err}
+		}
+		return scheduleFetchedMsg{entries: entries, current: current}
+	}
+}
+
+func assignScheduleCmd(client *api.Client, userID int64, date string, from, to time.Time) tea.Cmd {
+	return func() tea.Msg {
+		if _, err := client.AssignSchedule(userID, []string{date}); err != nil {
+			return scheduleActionErrMsg{err}
+		}
+		entries, err := client.GetSchedule(from.Format("2006-01-02"), to.Format("2006-01-02"))
+		if err != nil {
+			return scheduleActionErrMsg{err}
+		}
+		current, err := client.GetCurrentOnCall()
+		if err != nil {
+			return scheduleActionErrMsg{err}
+		}
+		return scheduleFetchedMsg{entries: entries, current: current}
+	}
+}
+
+func deleteScheduleEntryCmd(client *api.Client, entryID int64, from, to time.Time) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.DeleteScheduleEntry(entryID); err != nil {
+			return scheduleActionErrMsg{err}
+		}
+		entries, err := client.GetSchedule(from.Format("2006-01-02"), to.Format("2006-01-02"))
+		if err != nil {
+			return scheduleActionErrMsg{err}
+		}
+		current, err := client.GetCurrentOnCall()
+		if err != nil {
+			return scheduleActionErrMsg{err}
+		}
+		return scheduleFetchedMsg{entries: entries, current: current}
+	}
+}
+
+func fetchUsersCmd(client *api.Client) tea.Cmd {
+	return func() tea.Msg {
+		users, err := client.ListUsers()
+		if err != nil {
+			return usersFetchedMsg{} // empty on error, statusMsg set elsewhere
+		}
+		return usersFetchedMsg{users: users}
 	}
 }
 

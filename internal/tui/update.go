@@ -13,6 +13,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.rebuildTable()
+		m.rebuildScheduleTable()
+		m.rebuildUserPickerTable()
 		m.detailViewport.Width = m.width
 		m.detailViewport.Height = m.detailViewportHeight()
 		m.statsViewport.Width = m.width
@@ -21,7 +23,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshStatsContent()
 		return m, nil
 
-	// Dashboard messages
+	// ── Dashboard messages ────────────────────────────────────────────────
+
 	case connectedMsg:
 		m.connected = true
 		m.err = nil
@@ -57,7 +60,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			fetchStatsCmd(m.client),
 		)
 
-	// Detail messages
+	// ── Detail messages ───────────────────────────────────────────────────
+
 	case alertDetailFetchedMsg:
 		m.selectedAlert = msg.alert
 		m.comments = msg.comments
@@ -91,6 +95,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = modeDetail
 		return m, clearStatusCmd()
 
+	// ── Schedule messages ─────────────────────────────────────────────────
+
+	case scheduleFetchedMsg:
+		m.scheduleEntries = msg.entries
+		m.currentOnCall = msg.current
+		m.scheduleDays = buildScheduleDays(m.scheduleWindow, msg.entries)
+		m.scheduleLoading = false
+		m.rebuildScheduleTable()
+		return m, nil
+
+	case scheduleFetchErrMsg:
+		m.scheduleLoading = false
+		m.statusMsg = "schedule error: " + msg.err.Error()
+		return m, clearStatusCmd()
+
+	case scheduleActionErrMsg:
+		m.scheduleLoading = false
+		m.statusMsg = "error: " + msg.err.Error()
+		return m, clearStatusCmd()
+
+	case usersFetchedMsg:
+		m.users = msg.users
+		m.usersLoading = false
+		m.rebuildUserPickerTable()
+		return m, nil
+
+	// ── Common ────────────────────────────────────────────────────────────
+
 	case clearStatusMsg:
 		m.statusMsg = ""
 		return m, nil
@@ -102,14 +134,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// routeKey passes the key event to the appropriate component then our handler.
+// routeKey passes the key to the active component then to our handler.
 func (m Model) routeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch m.mode {
-	case modeDetail, modeConfirmDelete:
+	case modeDetail:
 		var vpCmd tea.Cmd
 		m.detailViewport, vpCmd = m.detailViewport.Update(msg)
 		m2, ourCmd := m.handleKey(msg)
 		return m2, tea.Batch(vpCmd, ourCmd)
+
+	case modeConfirmDelete:
+		// No component to scroll; just handle y/n.
+		return m.handleKey(msg)
 
 	case modeComment:
 		var inputCmd tea.Cmd
@@ -123,12 +159,26 @@ func (m Model) routeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m2, ourCmd := m.handleKey(msg)
 		return m2, tea.Batch(vpCmd, ourCmd)
 
+	case modeScheduleUserPicker:
+		var tableCmd tea.Cmd
+		m.userPickerTable, tableCmd = m.userPickerTable.Update(msg)
+		m2, ourCmd := m.handleKey(msg)
+		return m2, tea.Batch(tableCmd, ourCmd)
+
 	default: // modeDashboard
-		if m.activeSection == sectionAlerts && m.connected {
-			var tableCmd tea.Cmd
-			m.alertTable, tableCmd = m.alertTable.Update(msg)
-			m2, ourCmd := m.handleKey(msg)
-			return m2, tea.Batch(tableCmd, ourCmd)
+		if m.connected {
+			switch m.activeSection {
+			case sectionAlerts:
+				var tableCmd tea.Cmd
+				m.alertTable, tableCmd = m.alertTable.Update(msg)
+				m2, ourCmd := m.handleKey(msg)
+				return m2, tea.Batch(tableCmd, ourCmd)
+			case sectionSchedule:
+				var tableCmd tea.Cmd
+				m.scheduleTable, tableCmd = m.scheduleTable.Update(msg)
+				m2, ourCmd := m.handleKey(msg)
+				return m2, tea.Batch(tableCmd, ourCmd)
+			}
 		}
 		return m.handleKey(msg)
 	}
@@ -144,10 +194,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.handleConfirmKey(msg)
 	case modeStats:
 		return m.handleStatsKey(msg)
+	case modeScheduleUserPicker:
+		return m.handleUserPickerKey(msg)
 	default:
 		return m.handleDashboardKey(msg)
 	}
 }
+
+// ── Dashboard ─────────────────────────────────────────────────────────────
 
 func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
@@ -155,12 +209,25 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "tab":
-		m.activeSection = (m.activeSection + 1) % 3
+		next := section((int(m.activeSection) + 1) % 3)
+		m.activeSection = next
+		if next == sectionSchedule && len(m.scheduleDays) == 0 {
+			m.scheduleLoading = true
+			from := m.scheduleWindow
+			to := m.scheduleWindow.AddDate(0, 0, 13)
+			return m, fetchScheduleCmd(m.client, from, to)
+		}
 		return m, nil
 
 	case "r":
 		if !m.connected {
 			return m, connectCmd(m.client)
+		}
+		if m.activeSection == sectionSchedule {
+			m.scheduleLoading = true
+			from := m.scheduleWindow
+			to := m.scheduleWindow.AddDate(0, 0, 13)
+			return m, fetchScheduleCmd(m.client, from, to)
 		}
 		m.statusMsg = "Refreshing…"
 		return m, tea.Batch(
@@ -185,23 +252,75 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, fetchAlertsCmd(m.client, m.filterStatus)
 
 	case "enter":
-		if m.activeSection != sectionAlerts || len(m.alerts) == 0 {
+		if m.activeSection == sectionAlerts && len(m.alerts) > 0 {
+			cursor := m.alertTable.Cursor()
+			if cursor < len(m.alerts) {
+				m.selectedAlert = m.alerts[cursor]
+				m.mode = modeDetail
+				m.commentCursor = -1
+				m.detailLoading = true
+				m.detailViewport = viewport.New(m.width, m.detailViewportHeight())
+				return m, fetchAlertDetailCmd(m.client, m.selectedAlert.ID)
+			}
+		}
+		return m, nil
+
+	// Schedule-specific keys
+	case "left", "h":
+		if m.activeSection == sectionSchedule {
+			m.scheduleWindow = m.scheduleWindow.AddDate(0, 0, -7)
+			m.scheduleLoading = true
+			from := m.scheduleWindow
+			to := m.scheduleWindow.AddDate(0, 0, 13)
+			return m, fetchScheduleCmd(m.client, from, to)
+		}
+		return m, nil
+
+	case "right", "l":
+		if m.activeSection == sectionSchedule {
+			m.scheduleWindow = m.scheduleWindow.AddDate(0, 0, 7)
+			m.scheduleLoading = true
+			from := m.scheduleWindow
+			to := m.scheduleWindow.AddDate(0, 0, 13)
+			return m, fetchScheduleCmd(m.client, from, to)
+		}
+		return m, nil
+
+	case "+":
+		if m.activeSection != sectionSchedule || !m.connected {
 			return m, nil
 		}
-		cursor := m.alertTable.Cursor()
-		if cursor >= len(m.alerts) {
+		m.mode = modeScheduleUserPicker
+		if len(m.users) == 0 {
+			m.usersLoading = true
+			return m, fetchUsersCmd(m.client)
+		}
+		m.rebuildUserPickerTable()
+		return m, nil
+
+	case "d":
+		if m.activeSection != sectionSchedule || !m.connected {
 			return m, nil
 		}
-		m.selectedAlert = m.alerts[cursor]
-		m.mode = modeDetail
-		m.commentCursor = -1
-		m.detailLoading = true
-		m.detailViewport = viewport.New(m.width, m.detailViewportHeight())
-		return m, fetchAlertDetailCmd(m.client, m.selectedAlert.ID)
+		cursor := m.scheduleTable.Cursor()
+		if cursor >= len(m.scheduleDays) {
+			return m, nil
+		}
+		day := m.scheduleDays[cursor]
+		if day.entry == nil {
+			m.statusMsg = "no assignment to delete on this date"
+			return m, clearStatusCmd()
+		}
+		m.pendingDeleteEntry = day.entry
+		m.confirmTarget = confirmDeleteScheduleEntry
+		m.mode = modeConfirmDelete
+		return m, nil
 	}
 
 	return m, nil
 }
+
+// ── Detail ────────────────────────────────────────────────────────────────
 
 func (m Model) handleDetailKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
@@ -237,6 +356,7 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			return m, clearStatusCmd()
 		}
 		m.pendingDeleteID = m.comments[m.commentCursor].ID
+		m.confirmTarget = confirmDeleteComment
 		m.mode = modeConfirmDelete
 		return m, nil
 
@@ -278,6 +398,8 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
+// ── Comment compose ───────────────────────────────────────────────────────
+
 func (m Model) handleCommentKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -300,26 +422,77 @@ func (m Model) handleCommentKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
+// ── Confirm delete ────────────────────────────────────────────────────────
+
 func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch strings.ToLower(msg.String()) {
 	case "y":
-		alertID := m.selectedAlert.ID
-		commentID := m.pendingDeleteID
-		m.mode = modeDetail
-		m.commentCursor = -1
-		m.pendingDeleteID = 0
-		return m, deleteCommentCmd(m.client, alertID, commentID)
+		switch m.confirmTarget {
+		case confirmDeleteComment:
+			alertID := m.selectedAlert.ID
+			commentID := m.pendingDeleteID
+			m.mode = modeDetail
+			m.commentCursor = -1
+			m.pendingDeleteID = 0
+			return m, deleteCommentCmd(m.client, alertID, commentID)
+		case confirmDeleteScheduleEntry:
+			entry := m.pendingDeleteEntry
+			m.mode = modeDashboard
+			m.pendingDeleteEntry = nil
+			m.scheduleLoading = true
+			from := m.scheduleWindow
+			to := m.scheduleWindow.AddDate(0, 0, 13)
+			return m, deleteScheduleEntryCmd(m.client, entry.ID, from, to)
+		}
 	default:
-		m.mode = modeDetail
+		switch m.confirmTarget {
+		case confirmDeleteComment:
+			m.mode = modeDetail
+		case confirmDeleteScheduleEntry:
+			m.mode = modeDashboard
+		}
 		m.pendingDeleteID = 0
-		return m, nil
+		m.pendingDeleteEntry = nil
 	}
+	return m, nil
 }
+
+// ── Stats ─────────────────────────────────────────────────────────────────
 
 func (m Model) handleStatsKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if msg.String() == "esc" {
 		m.mode = modeDetail
 		return m, nil
 	}
+	return m, nil
+}
+
+// ── User picker ───────────────────────────────────────────────────────────
+
+func (m Model) handleUserPickerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeDashboard
+		return m, nil
+
+	case "enter":
+		cursor := m.userPickerTable.Cursor()
+		if cursor >= len(m.users) {
+			return m, nil
+		}
+		user := m.users[cursor]
+		scheduleCursor := m.scheduleTable.Cursor()
+		if scheduleCursor >= len(m.scheduleDays) {
+			m.mode = modeDashboard
+			return m, nil
+		}
+		date := m.scheduleDays[scheduleCursor].date.Format("2006-01-02")
+		from := m.scheduleWindow
+		to := m.scheduleWindow.AddDate(0, 0, 13)
+		m.mode = modeDashboard
+		m.scheduleLoading = true
+		return m, assignScheduleCmd(m.client, user.ID, date, from, to)
+	}
+
 	return m, nil
 }

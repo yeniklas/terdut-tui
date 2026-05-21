@@ -48,3 +48,18 @@ type DayStat struct {
 	DayName string `json:"day_name"`
 	Count   int    `json:"count"`
 }
+
+type ScheduleEntry struct {
+	ID        int64     `json:"id"`
+	UserID    int64     `json:"user_id"`
+	Username  string    `json:"username"`
+	Date      string    `json:"date"` // YYYY-MM-DD
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type User struct {
+	ID        int64     `json:"id"`
+	Username  string    `json:"username"`
+	Email     string    `json:"email"`
+	CreatedAt time.Time `json:"created_at"`
+}

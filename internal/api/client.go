@@ -187,6 +187,74 @@ func (c *Client) GetStatsByDay() ([]DayStat, error) {
 	return result, c.do(req, &result)
 }
 
+func (c *Client) GetSchedule(from, to string) ([]ScheduleEntry, error) {
+	req, err := c.newRequest(http.MethodGet, fmt.Sprintf("/api/schedule?from=%s&to=%s", from, to))
+	if err != nil {
+		return nil, err
+	}
+	var entries []ScheduleEntry
+	return entries, c.do(req, &entries)
+}
+
+// GetCurrentOnCall returns today's on-call entry, or nil if nobody is scheduled.
+func (c *Client) GetCurrentOnCall() (*ScheduleEntry, error) {
+	req, err := c.newRequest(http.MethodGet, "/api/schedule/current")
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode >= 400 {
+		var e struct{ Error string `json:"error"` }
+		_ = json.NewDecoder(resp.Body).Decode(&e)
+		if e.Error != "" {
+			return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, e.Error)
+		}
+		return nil, fmt.Errorf("server returned %d", resp.StatusCode)
+	}
+	var entry ScheduleEntry
+	if err := json.NewDecoder(resp.Body).Decode(&entry); err != nil {
+		return nil, err
+	}
+	return &entry, nil
+}
+
+func (c *Client) AssignSchedule(userID int64, dates []string) ([]ScheduleEntry, error) {
+	body := struct {
+		UserID int64    `json:"user_id"`
+		Dates  []string `json:"dates"`
+	}{UserID: userID, Dates: dates}
+	req, err := c.newRequestWithBody(http.MethodPost, "/api/schedule", body)
+	if err != nil {
+		return nil, err
+	}
+	var entries []ScheduleEntry
+	return entries, c.do(req, &entries)
+}
+
+func (c *Client) DeleteScheduleEntry(id int64) error {
+	req, err := c.newRequest(http.MethodDelete, fmt.Sprintf("/api/schedule/%d", id))
+	if err != nil {
+		return err
+	}
+	return c.do(req, nil)
+}
+
+func (c *Client) ListUsers() ([]User, error) {
+	req, err := c.newRequest(http.MethodGet, "/api/users")
+	if err != nil {
+		return nil, err
+	}
+	var users []User
+	return users, c.do(req, &users)
+}
+
 // HealthCheck calls GET /healthz (unauthenticated path, no auth needed but we send it anyway).
 func (c *Client) HealthCheck() error {
 	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/healthz", nil)
