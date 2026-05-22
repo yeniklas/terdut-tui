@@ -271,7 +271,7 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if next == sectionSchedule && len(m.scheduleDays) == 0 {
 			m.scheduleLoading = true
 			from := m.scheduleWindow
-			to := m.scheduleWindow.AddDate(0, 0, 13)
+			to := m.scheduleWindow.AddDate(0, 0, 6)
 			return m, fetchScheduleCmd(m.client, from, to)
 		}
 		if next == sectionUsers && len(m.users) == 0 {
@@ -287,7 +287,7 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if m.activeSection == sectionSchedule {
 			m.scheduleLoading = true
 			from := m.scheduleWindow
-			to := m.scheduleWindow.AddDate(0, 0, 13)
+			to := m.scheduleWindow.AddDate(0, 0, 6)
 			return m, fetchScheduleCmd(m.client, from, to)
 		}
 		if m.activeSection == sectionUsers {
@@ -336,7 +336,7 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.scheduleWindow = m.scheduleWindow.AddDate(0, 0, -7)
 			m.scheduleLoading = true
 			from := m.scheduleWindow
-			to := m.scheduleWindow.AddDate(0, 0, 13)
+			to := m.scheduleWindow.AddDate(0, 0, 6)
 			return m, fetchScheduleCmd(m.client, from, to)
 		}
 		return m, nil
@@ -346,7 +346,7 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.scheduleWindow = m.scheduleWindow.AddDate(0, 0, 7)
 			m.scheduleLoading = true
 			from := m.scheduleWindow
-			to := m.scheduleWindow.AddDate(0, 0, 13)
+			to := m.scheduleWindow.AddDate(0, 0, 6)
 			return m, fetchScheduleCmd(m.client, from, to)
 		}
 		return m, nil
@@ -558,7 +558,7 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.pendingDeleteEntry = nil
 			m.scheduleLoading = true
 			from := m.scheduleWindow
-			to := m.scheduleWindow.AddDate(0, 0, 13)
+			to := m.scheduleWindow.AddDate(0, 0, 6)
 			return m, deleteScheduleEntryCmd(m.client, entry.ID, from, to)
 		case confirmDeleteUser:
 			userID := m.selectedUser.ID
@@ -625,7 +625,7 @@ func (m Model) handleUserPickerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			dates = []string{d.Format("2006-01-02")}
 		}
 		from := m.scheduleWindow
-		to := m.scheduleWindow.AddDate(0, 0, 13)
+		to := m.scheduleWindow.AddDate(0, 0, 6)
 		m.mode = modeDashboard
 		m.scheduleLoading = true
 		return m, assignScheduleCmd(m.client, user.ID, dates, from, to)

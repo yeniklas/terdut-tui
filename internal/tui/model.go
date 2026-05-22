@@ -198,7 +198,12 @@ func NewModel(client *api.Client, serverURL string, refreshInterval time.Duratio
 	revokeIn.CharLimit = 20
 
 	now := time.Now().UTC()
-	window := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	weekday := int(today.Weekday())
+	if weekday == 0 {
+		weekday = 7 // ISO: Sunday = 7
+	}
+	window := today.AddDate(0, 0, -(weekday - 1))
 
 	return Model{
 		client:            client,
@@ -406,7 +411,7 @@ func buildScheduleDays(window time.Time, entries []api.ScheduleEntry) []schedule
 	for _, e := range entries {
 		entryMap[e.Date] = e
 	}
-	days := make([]scheduleDay, 14)
+	days := make([]scheduleDay, 7)
 	for i := range days {
 		date := window.AddDate(0, 0, i)
 		day := scheduleDay{date: date}

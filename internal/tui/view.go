@@ -222,7 +222,7 @@ func (m Model) renderSchedule() string {
 
 	// Window label
 	from := m.scheduleWindow
-	to := m.scheduleWindow.AddDate(0, 0, 13)
+	to := m.scheduleWindow.AddDate(0, 0, 6)
 	windowLabel := styleMuted.Render(fmt.Sprintf("  %s — %s",
 		from.Format("Jan 02"), to.Format("Jan 02, 2006")))
 
