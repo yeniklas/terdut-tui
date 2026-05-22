@@ -61,11 +61,15 @@ func (c *Client) do(req *http.Request, out any) error {
 	return nil
 }
 
-// ListAlerts fetches alerts from the server. status may be "firing", "resolved", or "" for all.
-func (c *Client) ListAlerts(status string, limit int) ([]Alert, error) {
+// ListAlerts fetches alerts. status may be "firing", "resolved", or "" for all.
+// Set archived=true to fetch only archived alerts; false returns only non-archived.
+func (c *Client) ListAlerts(status string, archived bool, limit int) ([]Alert, error) {
 	q := url.Values{}
 	if status != "" {
 		q.Set("status", status)
+	}
+	if archived {
+		q.Set("archived", "true")
 	}
 	if limit > 0 {
 		q.Set("limit", strconv.Itoa(limit))
@@ -81,6 +85,23 @@ func (c *Client) ListAlerts(status string, limit int) ([]Alert, error) {
 	}
 	var alerts []Alert
 	return alerts, c.do(req, &alerts)
+}
+
+func (c *Client) ArchiveAlert(id int64) (*Alert, error) {
+	req, err := c.newRequest(http.MethodPost, fmt.Sprintf("/api/alerts/%d/archive", id))
+	if err != nil {
+		return nil, err
+	}
+	var alert Alert
+	return &alert, c.do(req, &alert)
+}
+
+func (c *Client) UnarchiveAlert(id int64) error {
+	req, err := c.newRequest(http.MethodDelete, fmt.Sprintf("/api/alerts/%d/archive", id))
+	if err != nil {
+		return err
+	}
+	return c.do(req, nil)
 }
 
 // GetAlertStats fetches aggregate alert counts.

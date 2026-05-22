@@ -18,7 +18,8 @@ import (
 type section int
 
 const (
-	sectionAlerts section = iota
+	sectionAlerts   section = iota
+	sectionArchived
 	sectionSchedule
 	sectionUsers
 )
@@ -53,6 +54,9 @@ const (
 type connectedMsg struct{}
 type connectErrMsg struct{ err error }
 type alertsFetchedMsg struct{ alerts []api.Alert }
+type archivedAlertsFetchedMsg struct{ alerts []api.Alert }
+type alertArchivedMsg struct{ alerts []api.Alert }
+type alertUnarchivedMsg struct{ alerts []api.Alert }
 type statsFetchedMsg struct{ stats api.AlertStats }
 type fetchDataErrMsg struct{ err error }
 type tickMsg time.Time
@@ -113,6 +117,11 @@ type Model struct {
 	filterStatus string
 	alertTable   table.Model
 
+	// Archived alerts
+	archivedAlerts  []api.Alert
+	archivedLoading bool
+	archivedTable   table.Model
+
 	// Detail
 	selectedAlert  api.Alert
 	comments       []api.Comment
@@ -168,6 +177,9 @@ func NewModel(client *api.Client, serverURL string, refreshInterval time.Duratio
 	alertT := table.New(table.WithFocused(true))
 	alertT.SetStyles(ts)
 
+	archivedT := table.New(table.WithFocused(true))
+	archivedT.SetStyles(ts)
+
 	schedT := table.New(table.WithFocused(true))
 	schedT.SetStyles(ts)
 
@@ -215,6 +227,7 @@ func NewModel(client *api.Client, serverURL string, refreshInterval time.Duratio
 		filterStatus:      "firing",
 		commentCursor:     -1,
 		alertTable:        alertT,
+		archivedTable:     archivedT,
 		commentInput:      ti,
 		scheduleWindow:    window,
 		scheduleTable:     schedT,
@@ -252,6 +265,16 @@ func (m *Model) rebuildTable() {
 		h = 1
 	}
 	m.alertTable.SetHeight(h)
+}
+
+func (m *Model) rebuildArchivedTable() {
+	m.archivedTable.SetColumns(alertColumns(m.width))
+	m.archivedTable.SetRows(alertRows(m.archivedAlerts))
+	h := m.height - 8
+	if h < 1 {
+		h = 1
+	}
+	m.archivedTable.SetHeight(h)
 }
 
 func (m *Model) rebuildScheduleTable() {
@@ -466,11 +489,47 @@ func connectCmd(client *api.Client) tea.Cmd {
 
 func fetchAlertsCmd(client *api.Client, status string) tea.Cmd {
 	return func() tea.Msg {
-		alerts, err := client.ListAlerts(status, 500)
+		alerts, err := client.ListAlerts(status, false, 500)
 		if err != nil {
 			return fetchDataErrMsg{err}
 		}
 		return alertsFetchedMsg{alerts}
+	}
+}
+
+func fetchArchivedAlertsCmd(client *api.Client) tea.Cmd {
+	return func() tea.Msg {
+		alerts, err := client.ListAlerts("", true, 500)
+		if err != nil {
+			return fetchDataErrMsg{err}
+		}
+		return archivedAlertsFetchedMsg{alerts}
+	}
+}
+
+func archiveAlertCmd(client *api.Client, alertID int64, filterStatus string) tea.Cmd {
+	return func() tea.Msg {
+		if _, err := client.ArchiveAlert(alertID); err != nil {
+			return actionErrMsg{err}
+		}
+		alerts, err := client.ListAlerts(filterStatus, false, 500)
+		if err != nil {
+			return actionErrMsg{err}
+		}
+		return alertArchivedMsg{alerts}
+	}
+}
+
+func unarchiveAlertCmd(client *api.Client, alertID int64) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.UnarchiveAlert(alertID); err != nil {
+			return actionErrMsg{err}
+		}
+		alerts, err := client.ListAlerts("", true, 500)
+		if err != nil {
+			return actionErrMsg{err}
+		}
+		return alertUnarchivedMsg{alerts}
 	}
 }
 

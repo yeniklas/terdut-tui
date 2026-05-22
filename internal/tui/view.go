@@ -10,7 +10,7 @@ import (
 	"github.com/yeniklas/terdut-tui/internal/api"
 )
 
-var sectionNames = []string{"Alerts", "Schedule", "Users"}
+var sectionNames = []string{"Alerts", "Archived", "Schedule", "Users"}
 
 func (m Model) View() string {
 	if m.width == 0 {
@@ -92,7 +92,12 @@ func (m Model) renderBody() string {
 func (m Model) renderFooter() string {
 	switch m.mode {
 	case modeDetail:
-		actions := styleFooter.Render("  a·ack  A·unack  c·comment  [/]·select  d·del  s·assign  S·stats  esc·back")
+		var actions string
+		if m.activeSection == sectionArchived {
+			actions = styleFooter.Render("  x·unarchive  c·comment  [/]·select  d·del  S·stats  esc·back")
+		} else {
+			actions = styleFooter.Render("  a·ack  A·unack  x·archive  c·comment  [/]·select  d·del  s·assign  S·stats  esc·back")
+		}
 		if m.statusMsg != "" {
 			return styleStatus.Render("  "+m.statusMsg) + "\n" + actions
 		}
@@ -163,6 +168,13 @@ func (m Model) renderFooter() string {
 		return "\n" + styleFooter.Render("  enter·revoke  esc·back")
 
 	default:
+		if m.activeSection == sectionArchived {
+			actions := styleFooter.Render("  x·unarchive  enter·detail  r·refresh  tab·section  q·quit")
+			if m.statusMsg != "" {
+				return styleStatus.Render("  "+m.statusMsg) + "\n" + actions
+			}
+			return "\n" + actions
+		}
 		if m.activeSection == sectionSchedule {
 			actions := styleFooter.Render("  +·assign day  W·assign week  d·del  ←/→·shift week  tab·section  r·refresh  q·quit")
 			if m.statusMsg != "" {
@@ -177,6 +189,10 @@ func (m Model) renderFooter() string {
 			}
 			return "\n" + actions
 		}
+		var footerLeft string
+		if m.activeSection == sectionAlerts {
+			footerLeft = styleFooter.Render("  x·archive")
+		}
 		helpView := styleFooter.Render(m.help.ShortHelpView(m.keys.ShortHelp()))
 		if m.statusMsg != "" {
 			status := styleStatus.Render(m.statusMsg)
@@ -185,6 +201,13 @@ func (m Model) renderFooter() string {
 				gap = 0
 			}
 			return "\n" + status + strings.Repeat(" ", gap) + helpView
+		}
+		if footerLeft != "" {
+			gap := m.width - lipgloss.Width(footerLeft) - lipgloss.Width(helpView)
+			if gap < 0 {
+				gap = 0
+			}
+			return "\n" + footerLeft + strings.Repeat(" ", gap) + helpView
 		}
 		return "\n" + helpView
 	}
@@ -196,6 +219,8 @@ func (m Model) renderDashboard() string {
 	switch m.activeSection {
 	case sectionAlerts:
 		return m.renderAlerts()
+	case sectionArchived:
+		return m.renderArchived()
 	case sectionSchedule:
 		return m.renderSchedule()
 	case sectionUsers:
@@ -282,6 +307,16 @@ func (m Model) renderAlerts() string {
 		content = m.alertTable.View()
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, statsBar, content)
+}
+
+func (m Model) renderArchived() string {
+	if m.archivedLoading {
+		return styleMuted.Render("  Loading archived alerts…")
+	}
+	if len(m.archivedAlerts) == 0 {
+		return styleMuted.Render("  No archived alerts.")
+	}
+	return m.archivedTable.View()
 }
 
 func (m Model) renderStatsBar() string {

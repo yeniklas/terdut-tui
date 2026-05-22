@@ -16,6 +16,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.rebuildTable()
+		m.rebuildArchivedTable()
 		m.rebuildScheduleTable()
 		m.rebuildUserPickerTable()
 		m.rebuildUserManageTable()
@@ -48,6 +49,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.rebuildTable()
 		return m, nil
+
+	case archivedAlertsFetchedMsg:
+		m.archivedAlerts = msg.alerts
+		m.archivedLoading = false
+		m.rebuildArchivedTable()
+		return m, nil
+
+	case alertArchivedMsg:
+		m.alerts = msg.alerts
+		m.loading = false
+		m.rebuildTable()
+		m.mode = modeDashboard
+		m.statusMsg = "Alert archived"
+		return m, clearStatusCmd()
+
+	case alertUnarchivedMsg:
+		m.archivedAlerts = msg.alerts
+		m.archivedLoading = false
+		m.rebuildArchivedTable()
+		m.mode = modeDashboard
+		m.statusMsg = "Alert unarchived"
+		return m, clearStatusCmd()
 
 	case statsFetchedMsg:
 		m.stats = &msg.stats
@@ -215,6 +238,11 @@ func (m Model) routeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 				m.alertTable, tableCmd = m.alertTable.Update(msg)
 				m2, ourCmd := m.handleKey(msg)
 				return m2, tea.Batch(tableCmd, ourCmd)
+			case sectionArchived:
+				var tableCmd tea.Cmd
+				m.archivedTable, tableCmd = m.archivedTable.Update(msg)
+				m2, ourCmd := m.handleKey(msg)
+				return m2, tea.Batch(tableCmd, ourCmd)
 			case sectionSchedule:
 				var tableCmd tea.Cmd
 				m.scheduleTable, tableCmd = m.scheduleTable.Update(msg)
@@ -266,8 +294,12 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "tab":
-		next := section((int(m.activeSection) + 1) % 3)
+		next := section((int(m.activeSection) + 1) % 4)
 		m.activeSection = next
+		if next == sectionArchived && len(m.archivedAlerts) == 0 {
+			m.archivedLoading = true
+			return m, fetchArchivedAlertsCmd(m.client)
+		}
 		if next == sectionSchedule && len(m.scheduleDays) == 0 {
 			m.scheduleLoading = true
 			from := m.scheduleWindow
@@ -283,6 +315,10 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "r":
 		if !m.connected {
 			return m, connectCmd(m.client)
+		}
+		if m.activeSection == sectionArchived {
+			m.archivedLoading = true
+			return m, fetchArchivedAlertsCmd(m.client)
 		}
 		if m.activeSection == sectionSchedule {
 			m.scheduleLoading = true
@@ -319,7 +355,7 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "enter":
 		if m.activeSection == sectionAlerts && len(m.alerts) > 0 {
 			cursor := m.alertTable.Cursor()
-			if cursor < len(m.alerts) {
+			if cursor >= 0 && cursor < len(m.alerts) {
 				m.selectedAlert = m.alerts[cursor]
 				m.mode = modeDetail
 				m.commentCursor = -1
@@ -327,6 +363,34 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 				m.detailViewport = viewport.New(m.width, m.detailViewportHeight())
 				return m, fetchAlertDetailCmd(m.client, m.selectedAlert.ID)
 			}
+		}
+		if m.activeSection == sectionArchived && len(m.archivedAlerts) > 0 {
+			cursor := m.archivedTable.Cursor()
+			if cursor >= 0 && cursor < len(m.archivedAlerts) {
+				m.selectedAlert = m.archivedAlerts[cursor]
+				m.mode = modeDetail
+				m.commentCursor = -1
+				m.detailLoading = true
+				m.detailViewport = viewport.New(m.width, m.detailViewportHeight())
+				return m, fetchAlertDetailCmd(m.client, m.selectedAlert.ID)
+			}
+		}
+		return m, nil
+
+	case "x":
+		switch m.activeSection {
+		case sectionAlerts:
+			cursor := m.alertTable.Cursor()
+			if cursor < 0 || cursor >= len(m.alerts) {
+				return m, nil
+			}
+			return m, archiveAlertCmd(m.client, m.alerts[cursor].ID, m.filterStatus)
+		case sectionArchived:
+			cursor := m.archivedTable.Cursor()
+			if cursor < 0 || cursor >= len(m.archivedAlerts) {
+				return m, nil
+			}
+			return m, unarchiveAlertCmd(m.client, m.archivedAlerts[cursor].ID)
 		}
 		return m, nil
 
@@ -447,6 +511,9 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 
 	case "a":
+		if m.activeSection != sectionAlerts {
+			return m, nil
+		}
 		if m.selectedAlert.AcknowledgedByID != nil {
 			m.statusMsg = "already acknowledged"
 			return m, clearStatusCmd()
@@ -454,11 +521,23 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, acknowledgeCmd(m.client, m.selectedAlert.ID)
 
 	case "A":
+		if m.activeSection != sectionAlerts {
+			return m, nil
+		}
 		if m.selectedAlert.AcknowledgedByID == nil {
 			m.statusMsg = "not acknowledged"
 			return m, clearStatusCmd()
 		}
 		return m, unacknowledgeCmd(m.client, m.selectedAlert.ID)
+
+	case "x":
+		if m.activeSection == sectionAlerts {
+			return m, archiveAlertCmd(m.client, m.selectedAlert.ID, m.filterStatus)
+		}
+		if m.activeSection == sectionArchived {
+			return m, unarchiveAlertCmd(m.client, m.selectedAlert.ID)
+		}
+		return m, nil
 
 	case "c":
 		m.mode = modeComment

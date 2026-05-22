@@ -16,6 +16,7 @@ type Alert struct {
 	AcknowledgedByID *int64            `json:"acknowledged_by_id"`
 	AcknowledgedBy   string            `json:"acknowledged_by"`
 	AcknowledgedAt   *time.Time        `json:"acknowledged_at"`
+	ArchivedAt       *time.Time        `json:"archived_at,omitempty"`
 }
 
 type AlertStats struct {
