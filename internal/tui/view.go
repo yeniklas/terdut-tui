@@ -128,7 +128,11 @@ func (m Model) renderFooter() string {
 		return "\n" + styleFooter.Render("  esc·back")
 
 	case modeScheduleUserPicker:
-		return "\n" + styleFooter.Render("  j/k·navigate  enter·select  esc·cancel")
+		mode := "day"
+		if m.pickerAssignWeek {
+			mode = "week"
+		}
+		return "\n" + styleFooter.Render(fmt.Sprintf("  j/k·navigate  enter·assign %s  esc·cancel", mode))
 
 	case modeUserCreate:
 		if m.statusMsg != "" {
@@ -160,7 +164,7 @@ func (m Model) renderFooter() string {
 
 	default:
 		if m.activeSection == sectionSchedule {
-			actions := styleFooter.Render("  +·assign  d·del  ←/→·shift week  tab·section  r·refresh  q·quit")
+			actions := styleFooter.Render("  +·assign day  W·assign week  d·del  ←/→·shift week  tab·section  r·refresh  q·quit")
 			if m.statusMsg != "" {
 				return styleStatus.Render("  "+m.statusMsg) + "\n" + actions
 			}
@@ -235,19 +239,31 @@ func (m Model) renderUserPicker() string {
 		return "\n" + styleMuted.Render("  Loading users…")
 	}
 
-	selectedDate := ""
+	var scope string
 	cursor := m.scheduleTable.Cursor()
 	if cursor < len(m.scheduleDays) {
-		d := m.scheduleDays[cursor]
-		if d.date.Format("2006-01-02") == time.Now().UTC().Format("2006-01-02") {
-			selectedDate = "Today (" + d.date.Format("Mon") + ")"
+		d := m.scheduleDays[cursor].date
+		if m.pickerAssignWeek {
+			weekday := int(d.Weekday())
+			if weekday == 0 {
+				weekday = 7
+			}
+			monday := d.AddDate(0, 0, -(weekday - 1))
+			sunday := monday.AddDate(0, 0, 6)
+			_, week := d.ISOWeek()
+			scope = fmt.Sprintf("week W%02d (%s–%s)",
+				week, monday.Format("Jan 02"), sunday.Format("Jan 02"))
 		} else {
-			selectedDate = d.date.Format("Jan 02 (Mon)")
+			if d.Format("2006-01-02") == time.Now().UTC().Format("2006-01-02") {
+				scope = "Today (" + d.Format("Mon") + ")"
+			} else {
+				scope = d.Format("Jan 02 (Mon)")
+			}
 		}
 	}
 
 	header := fmt.Sprintf("\n  Assign on-call for %s — select a user:\n\n",
-		styleBold.Render(selectedDate))
+		styleBold.Render(scope))
 	return header + m.userPickerTable.View()
 }
 

@@ -144,9 +144,10 @@ type Model struct {
 	scheduleTable   table.Model
 
 	// User picker (schedule assignment)
-	users           []api.User
-	usersLoading    bool
-	userPickerTable table.Model
+	users            []api.User
+	usersLoading     bool
+	userPickerTable  table.Model
+	pickerAssignWeek bool
 
 	// User management section
 	userManageTable   table.Model
@@ -328,7 +329,7 @@ func alertColumns(width int) []table.Column {
 }
 
 func scheduleColumns(width int) []table.Column {
-	dateW := 16
+	dateW := 18
 	onCallW := width - dateW - 6
 	if onCallW < 15 {
 		onCallW = 15
@@ -381,9 +382,15 @@ func scheduleRows(days []scheduleDay) []table.Row {
 	rows := make([]table.Row, len(days))
 	for i, d := range days {
 		dateStr := d.date.Format("2006-01-02")
-		label := d.date.Format("Jan 02  Mon")
+		showWeek := i == 0 || d.date.Weekday() == time.Monday
+		_, week := d.date.ISOWeek()
+		weekPrefix := "    "
+		if showWeek {
+			weekPrefix = fmt.Sprintf("W%02d ", week)
+		}
+		label := weekPrefix + d.date.Format("Jan 02 Mon")
 		if dateStr == today {
-			label = "Today   " + d.date.Format("Mon")
+			label = weekPrefix + "Today " + d.date.Format("Mon")
 		}
 		onCall := "—"
 		if d.entry != nil {
@@ -583,9 +590,9 @@ func fetchScheduleCmd(client *api.Client, from, to time.Time) tea.Cmd {
 	}
 }
 
-func assignScheduleCmd(client *api.Client, userID int64, date string, from, to time.Time) tea.Cmd {
+func assignScheduleCmd(client *api.Client, userID int64, dates []string, from, to time.Time) tea.Cmd {
 	return func() tea.Msg {
-		if _, err := client.AssignSchedule(userID, []string{date}); err != nil {
+		if _, err := client.AssignSchedule(userID, dates); err != nil {
 			return scheduleActionErrMsg{err}
 		}
 		entries, err := client.GetSchedule(from.Format("2006-01-02"), to.Format("2006-01-02"))

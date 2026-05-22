@@ -355,6 +355,20 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if m.activeSection != sectionSchedule || !m.connected {
 			return m, nil
 		}
+		m.pickerAssignWeek = false
+		m.mode = modeScheduleUserPicker
+		if len(m.users) == 0 {
+			m.usersLoading = true
+			return m, fetchUsersCmd(m.client)
+		}
+		m.rebuildUserPickerTable()
+		return m, nil
+
+	case "W":
+		if m.activeSection != sectionSchedule || !m.connected {
+			return m, nil
+		}
+		m.pickerAssignWeek = true
 		m.mode = modeScheduleUserPicker
 		if len(m.users) == 0 {
 			m.usersLoading = true
@@ -596,12 +610,25 @@ func (m Model) handleUserPickerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.mode = modeDashboard
 			return m, nil
 		}
-		date := m.scheduleDays[scheduleCursor].date.Format("2006-01-02")
+		d := m.scheduleDays[scheduleCursor].date
+		var dates []string
+		if m.pickerAssignWeek {
+			weekday := int(d.Weekday())
+			if weekday == 0 {
+				weekday = 7 // ISO: Sunday = 7
+			}
+			monday := d.AddDate(0, 0, -(weekday - 1))
+			for i := 0; i < 7; i++ {
+				dates = append(dates, monday.AddDate(0, 0, i).Format("2006-01-02"))
+			}
+		} else {
+			dates = []string{d.Format("2006-01-02")}
+		}
 		from := m.scheduleWindow
 		to := m.scheduleWindow.AddDate(0, 0, 13)
 		m.mode = modeDashboard
 		m.scheduleLoading = true
-		return m, assignScheduleCmd(m.client, user.ID, date, from, to)
+		return m, assignScheduleCmd(m.client, user.ID, dates, from, to)
 	}
 
 	return m, nil
