@@ -241,7 +241,7 @@ func (m Model) renderUserPicker() string {
 
 	var scope string
 	cursor := m.scheduleTable.Cursor()
-	if cursor < len(m.scheduleDays) {
+	if cursor >= 0 && cursor < len(m.scheduleDays) {
 		d := m.scheduleDays[cursor].date
 		if m.pickerAssignWeek {
 			weekday := int(d.Weekday())
