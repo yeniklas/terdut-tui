@@ -1,6 +1,19 @@
 # terdut-tui
 
-TUI client for [terdut-server](https://github.com/terdut-server), a Prometheus Alertmanager receiver and on-call scheduler.
+TUI client for [terdut-server](https://github.com/terdut-server), a Prometheus Alertmanager receiver and incident manager. Requires server **v0.4.0+**.
+
+## Domain model
+
+The server splits alerts from incidents, and this client mirrors it:
+
+- **Alert** — Alertmanager's record. Firing or resolved, read-only, no workflow state.
+- **Incident** — the work item: triggered → acknowledged → resolved, with an
+  assignee, snooze, notes and an append-only timeline. Many alerts to one incident,
+  correlated by Alertmanager's `groupKey`.
+
+All user actions target incidents. Two server behaviours the UI has to respect:
+manual resolve is **terminal** (hence the confirmation prompt), and snooze is the
+non-destructive "not now" alternative.
 
 ## Tech stack
 
@@ -57,6 +70,11 @@ go run . --self-update
 go build -ldflags="-X main.version=v0.1.0" -o terdut-tui .
 ```
 
+## Sections
+
+`Incidents` (the queue, and the default) · `Alerts` (raw read-only feed) ·
+`Archived` (archived incidents) · `Schedule` · `Users`
+
 ## Development stages
 
 | Stage | Feature |
@@ -66,6 +84,7 @@ go build -ldflags="-X main.version=v0.1.0" -o terdut-tui .
 | 3 | Alert detail: acknowledge, comment, statistics charts |
 | 4 | On-call schedule calendar view |
 | 5 | User management and API key lifecycle |
+| 6 | Incidents: queue, timeline, ack/assign/snooze/resolve, MTTA/MTTR |
 
 <!-- graymatter:instructions:begin — managed by `graymatter init`; edits inside this block are overwritten -->
 ## Memory (GrayMatter)

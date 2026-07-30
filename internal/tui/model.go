@@ -18,21 +18,27 @@ import (
 type section int
 
 const (
-	sectionAlerts   section = iota
+	// Incidents lead: they are the work. Alerts is the raw feed underneath.
+	sectionIncidents section = iota
+	sectionAlerts
 	sectionArchived
 	sectionSchedule
 	sectionUsers
+
+	sectionCount = 5
 )
 
 type mode int
 
 const (
 	modeDashboard mode = iota
-	modeDetail
-	modeComment
-	modeConfirmDelete
+	modeIncidentDetail
+	modeAlertDetail
+	modeNote
+	modeSnooze
+	modeConfirm
 	modeStats
-	modeScheduleUserPicker
+	modeUserPicker
 	modeUserCreate
 	modeAPIKeyMenu
 	modeAPIKeyCreate
@@ -43,31 +49,70 @@ const (
 type confirmTarget int
 
 const (
-	confirmDeleteComment confirmTarget = iota
+	confirmDeleteNote confirmTarget = iota
+	confirmResolveIncident
 	confirmDeleteScheduleEntry
 	confirmDeleteUser
 )
+
+// pickerTarget says what the user picker is choosing a person for.
+type pickerTarget int
+
+const (
+	pickerSchedule pickerTarget = iota
+	pickerIncidentAssignee
+)
+
+// incidentFilters is the cycle the f key walks in the Incidents section. The
+// empty string is the server default: open, unsnoozed incidents — the queue.
+var incidentFilters = []string{"", api.StatusTriggered, api.StatusAcknowledged, api.StatusResolved, "snoozed"}
+
+// alertFilters is the equivalent cycle for the raw alert feed.
+var alertFilters = []string{"firing", "resolved", "", "archived"}
+
+// incidentQuery translates a filter from the cycle into server query terms.
+func incidentQuery(filter string) (status string, snoozed bool) {
+	if filter == "snoozed" {
+		return "", true
+	}
+	return filter, false
+}
+
+// filterLabel renders a filter for the status bar.
+func filterLabel(filter string) string {
+	if filter == "" {
+		return "open"
+	}
+	return filter
+}
 
 // ── Messages ───────────────────────────────────────────────────────────────
 
 // dashboard
 type connectedMsg struct{}
 type connectErrMsg struct{ err error }
+type incidentsFetchedMsg struct{ incidents []api.Incident }
+type archivedIncidentsFetchedMsg struct{ incidents []api.Incident }
+type incidentActionDoneMsg struct {
+	incidents []api.Incident
+	status    string
+}
 type alertsFetchedMsg struct{ alerts []api.Alert }
-type archivedAlertsFetchedMsg struct{ alerts []api.Alert }
-type alertArchivedMsg struct{ alerts []api.Alert }
-type alertUnarchivedMsg struct{ alerts []api.Alert }
-type statsFetchedMsg struct{ stats api.AlertStats }
+type statsFetchedMsg struct {
+	incidents api.IncidentStats
+	alerts    api.AlertStats
+}
 type fetchDataErrMsg struct{ err error }
 type tickMsg time.Time
 type clearStatusMsg struct{}
 
 // detail
-type alertDetailFetchedMsg struct {
-	alert    api.Alert
-	comments []api.Comment
+type incidentDetailFetchedMsg struct {
+	incident api.Incident
+	timeline []api.IncidentEvent
 }
-type alertDetailErrMsg struct{ err error }
+type alertDetailFetchedMsg struct{ alert api.Alert }
+type detailErrMsg struct{ err error }
 type actionErrMsg struct{ err error }
 type detailStatsFetchedMsg struct {
 	top    []api.TopAlert
@@ -108,34 +153,46 @@ type Model struct {
 	height        int
 
 	// Connection & dashboard
-	connected    bool
-	loading      bool
-	err          error
-	statusMsg    string
-	alerts       []api.Alert
-	stats        *api.AlertStats
-	filterStatus string
-	alertTable   table.Model
+	connected     bool
+	loading       bool
+	err           error
+	statusMsg     string
+	incidentStats *api.IncidentStats
+	alertStats    *api.AlertStats
 
-	// Archived alerts
-	archivedAlerts  []api.Alert
-	archivedLoading bool
-	archivedTable   table.Model
+	// Incidents
+	incidents      []api.Incident
+	incidentFilter string
+	incidentTable  table.Model
 
-	// Detail
-	selectedAlert  api.Alert
-	comments       []api.Comment
-	commentCursor  int
-	detailLoading  bool
-	detailViewport viewport.Model
+	// Alerts (read-only feed)
+	alerts      []api.Alert
+	alertFilter string
+	alertTable  table.Model
 
-	// Comment compose
-	commentInput textinput.Model
+	// Archived incidents
+	archivedIncidents []api.Incident
+	archivedLoading   bool
+	archivedTable     table.Model
 
-	// Confirm delete
-	confirmTarget       confirmTarget
-	pendingDeleteID     int64          // comment ID
-	pendingDeleteEntry  *api.ScheduleEntry
+	// Incident detail
+	selectedIncident api.Incident
+	timeline         []api.IncidentEvent
+	noteCursor       int
+	detailLoading    bool
+	detailViewport   viewport.Model
+
+	// Alert detail
+	selectedAlert api.Alert
+
+	// Note compose & snooze
+	noteInput   textinput.Model
+	snoozeInput textinput.Model
+
+	// Confirm
+	confirmTarget      confirmTarget
+	pendingDeleteID    int64 // note event ID
+	pendingDeleteEntry *api.ScheduleEntry
 
 	// Stats
 	topAlerts     []api.TopAlert
@@ -143,6 +200,9 @@ type Model struct {
 	dayStats      []api.DayStat
 	statsLoading  bool
 	statsViewport viewport.Model
+	// statsReturnMode is where esc goes back to, since stats opens from both
+	// the dashboard and an incident.
+	statsReturnMode mode
 
 	// Schedule
 	scheduleWindow  time.Time
@@ -152,10 +212,11 @@ type Model struct {
 	scheduleLoading bool
 	scheduleTable   table.Model
 
-	// User picker (schedule assignment)
+	// User picker (schedule assignment and incident assignee)
 	users            []api.User
 	usersLoading     bool
 	userPickerTable  table.Model
+	pickerTarget     pickerTarget
 	pickerAssignWeek bool
 
 	// User management section
@@ -174,6 +235,9 @@ type Model struct {
 func NewModel(client *api.Client, serverURL string, refreshInterval time.Duration) Model {
 	ts := defaultTableStyles()
 
+	incidentT := table.New(table.WithFocused(true))
+	incidentT.SetStyles(ts)
+
 	alertT := table.New(table.WithFocused(true))
 	alertT.SetStyles(ts)
 
@@ -189,9 +253,13 @@ func NewModel(client *api.Client, serverURL string, refreshInterval time.Duratio
 	manageT := table.New(table.WithFocused(true))
 	manageT.SetStyles(ts)
 
-	ti := textinput.New()
-	ti.Placeholder = "type your comment…"
-	ti.CharLimit = 1000
+	noteIn := textinput.New()
+	noteIn.Placeholder = "type your note…"
+	noteIn.CharLimit = 1000
+
+	snoozeIn := textinput.New()
+	snoozeIn.Placeholder = "duration, e.g. 2h or 30m"
+	snoozeIn.CharLimit = 16
 
 	usernameIn := textinput.New()
 	usernameIn.Placeholder = "username"
@@ -221,14 +289,17 @@ func NewModel(client *api.Client, serverURL string, refreshInterval time.Duratio
 		client:            client,
 		serverURL:         serverURL,
 		refreshInterval:   refreshInterval,
-		activeSection:     sectionAlerts,
+		activeSection:     sectionIncidents,
 		mode:              modeDashboard,
 		loading:           true,
-		filterStatus:      "firing",
-		commentCursor:     -1,
+		incidentFilter:    "",
+		alertFilter:       "firing",
+		noteCursor:        -1,
+		incidentTable:     incidentT,
 		alertTable:        alertT,
 		archivedTable:     archivedT,
-		commentInput:      ti,
+		noteInput:         noteIn,
+		snoozeInput:       snoozeIn,
 		scheduleWindow:    window,
 		scheduleTable:     schedT,
 		userPickerTable:   pickerT,
@@ -257,34 +328,28 @@ func defaultTableStyles() table.Styles {
 	return s
 }
 
+func (m *Model) rebuildIncidentTable() {
+	m.incidentTable.SetColumns(incidentColumns(m.width))
+	m.incidentTable.SetRows(incidentRows(m.incidents))
+	m.incidentTable.SetHeight(tableHeight(m.height, 8))
+}
+
 func (m *Model) rebuildTable() {
 	m.alertTable.SetColumns(alertColumns(m.width))
 	m.alertTable.SetRows(alertRows(m.alerts))
-	h := m.height - 8
-	if h < 1 {
-		h = 1
-	}
-	m.alertTable.SetHeight(h)
+	m.alertTable.SetHeight(tableHeight(m.height, 8))
 }
 
 func (m *Model) rebuildArchivedTable() {
-	m.archivedTable.SetColumns(alertColumns(m.width))
-	m.archivedTable.SetRows(alertRows(m.archivedAlerts))
-	h := m.height - 8
-	if h < 1 {
-		h = 1
-	}
-	m.archivedTable.SetHeight(h)
+	m.archivedTable.SetColumns(incidentColumns(m.width))
+	m.archivedTable.SetRows(incidentRows(m.archivedIncidents))
+	m.archivedTable.SetHeight(tableHeight(m.height, 8))
 }
 
 func (m *Model) rebuildScheduleTable() {
 	m.scheduleTable.SetColumns(scheduleColumns(m.width))
 	m.scheduleTable.SetRows(scheduleRows(m.scheduleDays))
-	h := m.height - 10
-	if h < 1 {
-		h = 1
-	}
-	m.scheduleTable.SetHeight(h)
+	m.scheduleTable.SetHeight(tableHeight(m.height, 10))
 }
 
 func (m *Model) rebuildUserPickerTable() {
@@ -294,11 +359,7 @@ func (m *Model) rebuildUserPickerTable() {
 		rows[i] = table.Row{u.Username, u.Email}
 	}
 	m.userPickerTable.SetRows(rows)
-	h := m.height - 10
-	if h < 1 {
-		h = 1
-	}
-	m.userPickerTable.SetHeight(h)
+	m.userPickerTable.SetHeight(tableHeight(m.height, 10))
 }
 
 func (m *Model) rebuildUserManageTable() {
@@ -308,27 +369,37 @@ func (m *Model) rebuildUserManageTable() {
 		rows[i] = table.Row{u.Username, u.Email, u.CreatedAt.UTC().Format("2006-01-02")}
 	}
 	m.userManageTable.SetRows(rows)
-	h := m.height - 10
+	m.userManageTable.SetHeight(tableHeight(m.height, 10))
+}
+
+func tableHeight(windowHeight, chrome int) int {
+	h := windowHeight - chrome
 	if h < 1 {
 		h = 1
 	}
-	m.userManageTable.SetHeight(h)
+	return h
 }
 
 func (m *Model) refreshDetailContent() {
 	if m.width == 0 {
 		return
 	}
-	m.detailViewport.SetContent(buildDetailContent(m.selectedAlert, m.comments, m.commentCursor, m.width))
+	if m.mode == modeAlertDetail {
+		m.detailViewport.SetContent(buildAlertDetailContent(m.selectedAlert, m.width))
+		return
+	}
+	m.detailViewport.SetContent(
+		buildIncidentDetailContent(m.selectedIncident, m.timeline, m.noteCursor, m.width))
 }
 
 func (m *Model) refreshStatsContent() {
-	m.statsViewport.SetContent(buildStatsContent(m.topAlerts, m.hourStats, m.dayStats, m.width))
+	m.statsViewport.SetContent(
+		buildStatsContent(m.incidentStats, m.topAlerts, m.hourStats, m.dayStats, m.width))
 }
 
 func (m Model) detailViewportHeight() int {
 	h := m.height - 5
-	if m.mode == modeComment {
+	if m.mode == modeNote || m.mode == modeSnooze {
 		h -= 2
 	}
 	if h < 1 {
@@ -337,7 +408,39 @@ func (m Model) detailViewportHeight() int {
 	return h
 }
 
+// noteEvents filters a timeline down to the deletable entries, which is what
+// the [ and ] cursor walks.
+func noteEvents(timeline []api.IncidentEvent) []api.IncidentEvent {
+	notes := make([]api.IncidentEvent, 0, len(timeline))
+	for _, e := range timeline {
+		if e.Type == api.EventNote {
+			notes = append(notes, e)
+		}
+	}
+	return notes
+}
+
 // ── Column definitions ─────────────────────────────────────────────────────
+
+func incidentColumns(width int) []table.Column {
+	const sevW, statusW, timeW = 9, 15, 12
+	titleW := width/2 - 10
+	if titleW < 20 {
+		titleW = 20
+	}
+	// 10 = bubbles' Padding(0, 1) on each of the five cells.
+	assigneeW := width - sevW - titleW - statusW - timeW - 10
+	if assigneeW < 8 {
+		assigneeW = 8
+	}
+	return []table.Column{
+		{Title: "Sev", Width: sevW},
+		{Title: "Incident", Width: titleW},
+		{Title: "Status", Width: statusW},
+		{Title: "Assignee", Width: assigneeW},
+		{Title: "Triggered", Width: timeW},
+	}
+}
 
 func alertColumns(width int) []table.Column {
 	const statusW, timeW = 10, 12
@@ -346,16 +449,16 @@ func alertColumns(width int) []table.Column {
 		nameW = 20
 	}
 	// 10 = bubbles' Padding(0, 1) on each of the five cells.
-	ackW := width - nameW - statusW - 2*timeW - 10
-	if ackW < 8 {
-		ackW = 8
+	incW := width - nameW - statusW - 2*timeW - 10
+	if incW < 8 {
+		incW = 8
 	}
 	return []table.Column{
 		{Title: "Name", Width: nameW},
 		{Title: "Status", Width: statusW},
 		{Title: "Started", Width: timeW},
 		{Title: "Last Seen", Width: timeW},
-		{Title: "Ack By", Width: ackW},
+		{Title: "Incident", Width: incW},
 	}
 }
 
@@ -399,11 +502,38 @@ func userManageColumns(width int) []table.Column {
 
 // ── Row builders ───────────────────────────────────────────────────────────
 
+func incidentRows(incidents []api.Incident) []table.Row {
+	now := time.Now()
+	rows := make([]table.Row, len(incidents))
+	for i, inc := range incidents {
+		severity := inc.Severity
+		if severity == "" {
+			severity = "—"
+		}
+		// bubbles' table renders plain strings, so a snoozed incident is marked
+		// in the status cell rather than styled.
+		status := inc.Status
+		if inc.IsSnoozed() {
+			status += " (zzz)"
+		}
+		assignee := inc.AssignedTo
+		if assignee == "" {
+			assignee = "—"
+		}
+		rows[i] = table.Row{severity, inc.Title, status, assignee, humanAgo(now, inc.TriggeredAt)}
+	}
+	return rows
+}
+
 func alertRows(alerts []api.Alert) []table.Row {
 	now := time.Now()
 	rows := make([]table.Row, len(alerts))
 	for i, a := range alerts {
-		rows[i] = table.Row{a.Name, a.Status, humanAgo(now, a.StartsAt), humanAgo(now, a.ReceivedAt), a.AcknowledgedBy}
+		incident := "—"
+		if a.IncidentID != nil {
+			incident = fmt.Sprintf("#%d", *a.IncidentID)
+		}
+		rows[i] = table.Row{a.Name, a.Status, humanAgo(now, a.StartsAt), humanAgo(now, a.ReceivedAt), incident}
 	}
 	return rows
 }
@@ -457,26 +587,47 @@ func humanAgo(now, t time.Time) string {
 	if d < 0 {
 		d = 0
 	}
+	return humanDuration(d) + " ago"
+}
+
+// humanUntil renders a future deadline, used for snooze expiry.
+func humanUntil(now, t time.Time) string {
+	d := t.Sub(now)
+	if d <= 0 {
+		return "expired"
+	}
+	return "in " + humanDuration(d)
+}
+
+func humanDuration(d time.Duration) string {
 	switch {
 	case d < time.Minute:
-		return "just now"
+		return "moments"
 	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+		return fmt.Sprintf("%dm", int(d.Minutes()))
 	case d < 24*time.Hour:
 		h := int(d.Hours())
 		m := int(d.Minutes()) % 60
 		if m == 0 {
-			return fmt.Sprintf("%dh ago", h)
+			return fmt.Sprintf("%dh", h)
 		}
-		return fmt.Sprintf("%dh %dm ago", h, m)
+		return fmt.Sprintf("%dh %dm", h, m)
 	default:
 		days := int(d.Hours()) / 24
 		h := int(d.Hours()) % 24
 		if h == 0 {
-			return fmt.Sprintf("%dd ago", days)
+			return fmt.Sprintf("%dd", days)
 		}
-		return fmt.Sprintf("%dd %dh ago", days, h)
+		return fmt.Sprintf("%dd %dh", days, h)
 	}
+}
+
+// humanSeconds renders an MTTA/MTTR average.
+func humanSeconds(secs *float64) string {
+	if secs == nil {
+		return "—"
+	}
+	return humanDuration(time.Duration(*secs) * time.Second)
 }
 
 // ── Commands ───────────────────────────────────────────────────────────────
@@ -490,9 +641,36 @@ func connectCmd(client *api.Client) tea.Cmd {
 	}
 }
 
-func fetchAlertsCmd(client *api.Client, status string) tea.Cmd {
+func fetchIncidentsCmd(client *api.Client, filter string) tea.Cmd {
 	return func() tea.Msg {
-		alerts, err := client.ListAlerts(status, false, 500)
+		status, snoozed := incidentQuery(filter)
+		incidents, err := client.ListIncidents(status, false, snoozed, 500)
+		if err != nil {
+			return fetchDataErrMsg{err}
+		}
+		return incidentsFetchedMsg{incidents}
+	}
+}
+
+func fetchArchivedIncidentsCmd(client *api.Client) tea.Cmd {
+	return func() tea.Msg {
+		// Archived incidents are all resolved, so the status filter has to be
+		// widened past the server's open-only default or nothing comes back.
+		incidents, err := client.ListIncidents(api.StatusResolved, true, false, 500)
+		if err != nil {
+			return fetchDataErrMsg{err}
+		}
+		return archivedIncidentsFetchedMsg{incidents}
+	}
+}
+
+func fetchAlertsCmd(client *api.Client, filter string) tea.Cmd {
+	return func() tea.Msg {
+		status, archived := filter, false
+		if filter == "archived" {
+			status, archived = "", true
+		}
+		alerts, err := client.ListAlerts(status, archived, 500)
 		if err != nil {
 			return fetchDataErrMsg{err}
 		}
@@ -500,49 +678,122 @@ func fetchAlertsCmd(client *api.Client, status string) tea.Cmd {
 	}
 }
 
-func fetchArchivedAlertsCmd(client *api.Client) tea.Cmd {
-	return func() tea.Msg {
-		alerts, err := client.ListAlerts("", true, 500)
-		if err != nil {
-			return fetchDataErrMsg{err}
-		}
-		return archivedAlertsFetchedMsg{alerts}
-	}
-}
-
-func archiveAlertCmd(client *api.Client, alertID int64, filterStatus string) tea.Cmd {
-	return func() tea.Msg {
-		if _, err := client.ArchiveAlert(alertID); err != nil {
-			return actionErrMsg{err}
-		}
-		alerts, err := client.ListAlerts(filterStatus, false, 500)
-		if err != nil {
-			return actionErrMsg{err}
-		}
-		return alertArchivedMsg{alerts}
-	}
-}
-
-func unarchiveAlertCmd(client *api.Client, alertID int64) tea.Cmd {
-	return func() tea.Msg {
-		if err := client.UnarchiveAlert(alertID); err != nil {
-			return actionErrMsg{err}
-		}
-		alerts, err := client.ListAlerts("", true, 500)
-		if err != nil {
-			return actionErrMsg{err}
-		}
-		return alertUnarchivedMsg{alerts}
-	}
-}
-
 func fetchStatsCmd(client *api.Client) tea.Cmd {
 	return func() tea.Msg {
-		stats, err := client.GetAlertStats()
+		incidents, err := client.GetIncidentStats()
 		if err != nil {
 			return fetchDataErrMsg{err}
 		}
-		return statsFetchedMsg{*stats}
+		alerts, err := client.GetAlertStats()
+		if err != nil {
+			return fetchDataErrMsg{err}
+		}
+		return statsFetchedMsg{incidents: *incidents, alerts: *alerts}
+	}
+}
+
+// incidentDetail reloads an incident and its timeline. Every detail-mode action
+// funnels through it so the view always reflects what the server just did.
+func incidentDetail(client *api.Client, id int64) tea.Msg {
+	incident, err := client.GetIncident(id)
+	if err != nil {
+		return detailErrMsg{err}
+	}
+	timeline, err := client.GetIncidentTimeline(id)
+	if err != nil {
+		return detailErrMsg{err}
+	}
+	return incidentDetailFetchedMsg{incident: *incident, timeline: timeline}
+}
+
+func fetchIncidentDetailCmd(client *api.Client, id int64) tea.Cmd {
+	return func() tea.Msg { return incidentDetail(client, id) }
+}
+
+// incidentActionCmd performs an action then reloads the detail view, reporting
+// the server's error rather than a stale success.
+func incidentActionCmd(client *api.Client, id int64, action func() error) tea.Cmd {
+	return func() tea.Msg {
+		if err := action(); err != nil {
+			return actionErrMsg{err}
+		}
+		return incidentDetail(client, id)
+	}
+}
+
+func acknowledgeIncidentCmd(client *api.Client, id int64) tea.Cmd {
+	return incidentActionCmd(client, id, func() error {
+		_, err := client.AcknowledgeIncident(id)
+		return err
+	})
+}
+
+func unacknowledgeIncidentCmd(client *api.Client, id int64) tea.Cmd {
+	return incidentActionCmd(client, id, func() error { return client.UnacknowledgeIncident(id) })
+}
+
+func resolveIncidentCmd(client *api.Client, id int64) tea.Cmd {
+	return incidentActionCmd(client, id, func() error {
+		_, err := client.ResolveIncident(id)
+		return err
+	})
+}
+
+func assignIncidentCmd(client *api.Client, id, userID int64) tea.Cmd {
+	return incidentActionCmd(client, id, func() error {
+		_, err := client.AssignIncident(id, userID)
+		return err
+	})
+}
+
+func snoozeIncidentCmd(client *api.Client, id int64, duration string) tea.Cmd {
+	return incidentActionCmd(client, id, func() error {
+		_, err := client.SnoozeIncident(id, duration)
+		return err
+	})
+}
+
+func unsnoozeIncidentCmd(client *api.Client, id int64) tea.Cmd {
+	return incidentActionCmd(client, id, func() error { return client.UnsnoozeIncident(id) })
+}
+
+func addNoteCmd(client *api.Client, id int64, content string) tea.Cmd {
+	return incidentActionCmd(client, id, func() error {
+		_, err := client.AddNote(id, content)
+		return err
+	})
+}
+
+func deleteNoteCmd(client *api.Client, id, eventID int64) tea.Cmd {
+	return incidentActionCmd(client, id, func() error { return client.DeleteNote(id, eventID) })
+}
+
+// archiveIncidentCmd archives from the list view, so it reloads the list rather
+// than a detail pane.
+func archiveIncidentCmd(client *api.Client, id int64, filter string) tea.Cmd {
+	return func() tea.Msg {
+		if _, err := client.ArchiveIncident(id); err != nil {
+			return actionErrMsg{err}
+		}
+		status, snoozed := incidentQuery(filter)
+		incidents, err := client.ListIncidents(status, false, snoozed, 500)
+		if err != nil {
+			return actionErrMsg{err}
+		}
+		return incidentActionDoneMsg{incidents: incidents, status: "Incident archived"}
+	}
+}
+
+func unarchiveIncidentCmd(client *api.Client, id int64) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.UnarchiveIncident(id); err != nil {
+			return actionErrMsg{err}
+		}
+		incidents, err := client.ListIncidents(api.StatusResolved, true, false, 500)
+		if err != nil {
+			return actionErrMsg{err}
+		}
+		return archivedIncidentsFetchedMsg{incidents}
 	}
 }
 
@@ -550,78 +801,9 @@ func fetchAlertDetailCmd(client *api.Client, alertID int64) tea.Cmd {
 	return func() tea.Msg {
 		alert, err := client.GetAlert(alertID)
 		if err != nil {
-			return alertDetailErrMsg{err}
+			return detailErrMsg{err}
 		}
-		comments, err := client.GetComments(alertID)
-		if err != nil {
-			return alertDetailErrMsg{err}
-		}
-		return alertDetailFetchedMsg{alert: *alert, comments: comments}
-	}
-}
-
-func acknowledgeCmd(client *api.Client, alertID int64) tea.Cmd {
-	return func() tea.Msg {
-		alert, err := client.AcknowledgeAlert(alertID)
-		if err != nil {
-			return actionErrMsg{err}
-		}
-		comments, err := client.GetComments(alertID)
-		if err != nil {
-			return actionErrMsg{err}
-		}
-		return alertDetailFetchedMsg{alert: *alert, comments: comments}
-	}
-}
-
-func unacknowledgeCmd(client *api.Client, alertID int64) tea.Cmd {
-	return func() tea.Msg {
-		if err := client.UnacknowledgeAlert(alertID); err != nil {
-			return actionErrMsg{err}
-		}
-		alert, err := client.GetAlert(alertID)
-		if err != nil {
-			return actionErrMsg{err}
-		}
-		comments, err := client.GetComments(alertID)
-		if err != nil {
-			return actionErrMsg{err}
-		}
-		return alertDetailFetchedMsg{alert: *alert, comments: comments}
-	}
-}
-
-func addCommentCmd(client *api.Client, alertID int64, content string) tea.Cmd {
-	return func() tea.Msg {
-		if _, err := client.AddComment(alertID, content); err != nil {
-			return actionErrMsg{err}
-		}
-		alert, err := client.GetAlert(alertID)
-		if err != nil {
-			return actionErrMsg{err}
-		}
-		comments, err := client.GetComments(alertID)
-		if err != nil {
-			return actionErrMsg{err}
-		}
-		return alertDetailFetchedMsg{alert: *alert, comments: comments}
-	}
-}
-
-func deleteCommentCmd(client *api.Client, alertID, commentID int64) tea.Cmd {
-	return func() tea.Msg {
-		if err := client.DeleteComment(alertID, commentID); err != nil {
-			return actionErrMsg{err}
-		}
-		alert, err := client.GetAlert(alertID)
-		if err != nil {
-			return actionErrMsg{err}
-		}
-		comments, err := client.GetComments(alertID)
-		if err != nil {
-			return actionErrMsg{err}
-		}
-		return alertDetailFetchedMsg{alert: *alert, comments: comments}
+		return alertDetailFetchedMsg{alert: *alert}
 	}
 }
 

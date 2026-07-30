@@ -15,6 +15,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.rebuildIncidentTable()
 		m.rebuildTable()
 		m.rebuildArchivedTable()
 		m.rebuildScheduleTable()
@@ -35,7 +36,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = nil
 		return m, tea.Batch(
 			tickCmd(m.refreshInterval),
-			fetchAlertsCmd(m.client, m.filterStatus),
+			fetchIncidentsCmd(m.client, m.incidentFilter),
 			fetchStatsCmd(m.client),
 		)
 
@@ -44,62 +45,66 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		return m, nil
 
+	case incidentsFetchedMsg:
+		m.incidents = msg.incidents
+		m.loading = false
+		m.rebuildIncidentTable()
+		return m, nil
+
+	case archivedIncidentsFetchedMsg:
+		m.archivedIncidents = msg.incidents
+		m.archivedLoading = false
+		m.rebuildArchivedTable()
+		m.mode = modeDashboard
+		return m, nil
+
+	case incidentActionDoneMsg:
+		m.incidents = msg.incidents
+		m.loading = false
+		m.rebuildIncidentTable()
+		m.mode = modeDashboard
+		m.statusMsg = msg.status
+		return m, clearStatusCmd()
+
 	case alertsFetchedMsg:
 		m.alerts = msg.alerts
 		m.loading = false
 		m.rebuildTable()
 		return m, nil
 
-	case archivedAlertsFetchedMsg:
-		m.archivedAlerts = msg.alerts
-		m.archivedLoading = false
-		m.rebuildArchivedTable()
-		return m, nil
-
-	case alertArchivedMsg:
-		m.alerts = msg.alerts
-		m.loading = false
-		m.rebuildTable()
-		m.mode = modeDashboard
-		m.statusMsg = "Alert archived"
-		return m, clearStatusCmd()
-
-	case alertUnarchivedMsg:
-		m.archivedAlerts = msg.alerts
-		m.archivedLoading = false
-		m.rebuildArchivedTable()
-		m.mode = modeDashboard
-		m.statusMsg = "Alert unarchived"
-		return m, clearStatusCmd()
-
 	case statsFetchedMsg:
-		m.stats = &msg.stats
+		m.incidentStats = &msg.incidents
+		m.alertStats = &msg.alerts
 		return m, nil
 
 	case fetchDataErrMsg:
+		m.loading = false
+		m.archivedLoading = false
 		m.statusMsg = "refresh error: " + msg.err.Error()
 		return m, clearStatusCmd()
 
 	case tickMsg:
-		return m, tea.Batch(
-			tickCmd(m.refreshInterval),
-			fetchAlertsCmd(m.client, m.filterStatus),
-			fetchStatsCmd(m.client),
-		)
+		return m, tea.Batch(tickCmd(m.refreshInterval), m.refreshActiveSection())
 
 	// ── Detail messages ───────────────────────────────────────────────────
 
-	case alertDetailFetchedMsg:
-		m.selectedAlert = msg.alert
-		m.comments = msg.comments
+	case incidentDetailFetchedMsg:
+		m.selectedIncident = msg.incident
+		m.timeline = msg.timeline
 		m.detailLoading = false
-		if m.commentCursor >= len(m.comments) {
-			m.commentCursor = -1
+		if m.noteCursor >= len(noteEvents(m.timeline)) {
+			m.noteCursor = -1
 		}
 		m.refreshDetailContent()
 		return m, nil
 
-	case alertDetailErrMsg:
+	case alertDetailFetchedMsg:
+		m.selectedAlert = msg.alert
+		m.detailLoading = false
+		m.refreshDetailContent()
+		return m, nil
+
+	case detailErrMsg:
 		m.detailLoading = false
 		m.statusMsg = "error: " + msg.err.Error()
 		return m, clearStatusCmd()
@@ -119,7 +124,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case detailStatsErrMsg:
 		m.statsLoading = false
 		m.statusMsg = "stats error: " + msg.err.Error()
-		m.mode = modeDetail
+		m.mode = modeDashboard
 		return m, clearStatusCmd()
 
 	// ── Schedule messages ─────────────────────────────────────────────────
@@ -178,22 +183,60 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// refreshActiveSection reloads whatever the auto-refresh tick should keep fresh.
+// Detail views reload too — an incident someone else acknowledged should stop
+// looking unclaimed while you are staring at it.
+func (m Model) refreshActiveSection() tea.Cmd {
+	switch m.mode {
+	case modeIncidentDetail:
+		return fetchIncidentDetailCmd(m.client, m.selectedIncident.ID)
+	case modeAlertDetail:
+		return fetchAlertDetailCmd(m.client, m.selectedAlert.ID)
+	case modeDashboard:
+		// fall through to the section refresh below
+	default:
+		// Modal states (compose, pickers, confirmations) are left alone: a
+		// refresh underneath a prompt would move the ground under the user.
+		return nil
+	}
+
+	switch m.activeSection {
+	case sectionIncidents:
+		return tea.Batch(fetchIncidentsCmd(m.client, m.incidentFilter), fetchStatsCmd(m.client))
+	case sectionAlerts:
+		return tea.Batch(fetchAlertsCmd(m.client, m.alertFilter), fetchStatsCmd(m.client))
+	case sectionArchived:
+		return fetchArchivedIncidentsCmd(m.client)
+	case sectionSchedule:
+		return fetchScheduleCmd(m.client, m.scheduleWindow, m.scheduleWindow.AddDate(0, 0, 6))
+	case sectionUsers:
+		return fetchUsersCmd(m.client)
+	}
+	return nil
+}
+
 // routeKey passes the key to the active component then to our handler.
 func (m Model) routeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch m.mode {
-	case modeDetail:
+	case modeIncidentDetail, modeAlertDetail:
 		var vpCmd tea.Cmd
 		m.detailViewport, vpCmd = m.detailViewport.Update(msg)
 		m2, ourCmd := m.handleKey(msg)
 		return m2, tea.Batch(vpCmd, ourCmd)
 
-	case modeConfirmDelete:
+	case modeConfirm:
 		// No component to scroll; just handle y/n.
 		return m.handleKey(msg)
 
-	case modeComment:
+	case modeNote:
 		var inputCmd tea.Cmd
-		m.commentInput, inputCmd = m.commentInput.Update(msg)
+		m.noteInput, inputCmd = m.noteInput.Update(msg)
+		m2, ourCmd := m.handleKey(msg)
+		return m2, tea.Batch(inputCmd, ourCmd)
+
+	case modeSnooze:
+		var inputCmd tea.Cmd
+		m.snoozeInput, inputCmd = m.snoozeInput.Update(msg)
 		m2, ourCmd := m.handleKey(msg)
 		return m2, tea.Batch(inputCmd, ourCmd)
 
@@ -203,7 +246,7 @@ func (m Model) routeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m2, ourCmd := m.handleKey(msg)
 		return m2, tea.Batch(vpCmd, ourCmd)
 
-	case modeScheduleUserPicker:
+	case modeUserPicker:
 		var tableCmd tea.Cmd
 		m.userPickerTable, tableCmd = m.userPickerTable.Update(msg)
 		m2, ourCmd := m.handleKey(msg)
@@ -233,6 +276,11 @@ func (m Model) routeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	default: // modeDashboard
 		if m.connected {
 			switch m.activeSection {
+			case sectionIncidents:
+				var tableCmd tea.Cmd
+				m.incidentTable, tableCmd = m.incidentTable.Update(msg)
+				m2, ourCmd := m.handleKey(msg)
+				return m2, tea.Batch(tableCmd, ourCmd)
 			case sectionAlerts:
 				var tableCmd tea.Cmd
 				m.alertTable, tableCmd = m.alertTable.Update(msg)
@@ -261,15 +309,19 @@ func (m Model) routeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch m.mode {
-	case modeDetail:
-		return m.handleDetailKey(msg)
-	case modeComment:
-		return m.handleCommentKey(msg)
-	case modeConfirmDelete:
+	case modeIncidentDetail:
+		return m.handleIncidentDetailKey(msg)
+	case modeAlertDetail:
+		return m.handleAlertDetailKey(msg)
+	case modeNote:
+		return m.handleNoteKey(msg)
+	case modeSnooze:
+		return m.handleSnoozeKey(msg)
+	case modeConfirm:
 		return m.handleConfirmKey(msg)
 	case modeStats:
 		return m.handleStatsKey(msg)
-	case modeScheduleUserPicker:
+	case modeUserPicker:
 		return m.handleUserPickerKey(msg)
 	case modeUserCreate:
 		return m.handleUserCreateKey(msg)
@@ -294,82 +346,50 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "tab":
-		next := section((int(m.activeSection) + 1) % 4)
-		m.activeSection = next
-		if next == sectionArchived && len(m.archivedAlerts) == 0 {
-			m.archivedLoading = true
-			return m, fetchArchivedAlertsCmd(m.client)
-		}
-		if next == sectionSchedule && len(m.scheduleDays) == 0 {
-			m.scheduleLoading = true
-			from := m.scheduleWindow
-			to := m.scheduleWindow.AddDate(0, 0, 6)
-			return m, fetchScheduleCmd(m.client, from, to)
-		}
-		if next == sectionUsers && len(m.users) == 0 {
-			m.usersLoading = true
-			return m, fetchUsersCmd(m.client)
-		}
-		return m, nil
+		m.activeSection = section((int(m.activeSection) + 1) % sectionCount)
+		return m, m.loadSectionIfEmpty()
+
+	case "shift+tab":
+		m.activeSection = section((int(m.activeSection) + sectionCount - 1) % sectionCount)
+		return m, m.loadSectionIfEmpty()
 
 	case "r":
 		if !m.connected {
 			return m, connectCmd(m.client)
 		}
-		if m.activeSection == sectionArchived {
-			m.archivedLoading = true
-			return m, fetchArchivedAlertsCmd(m.client)
-		}
-		if m.activeSection == sectionSchedule {
-			m.scheduleLoading = true
-			from := m.scheduleWindow
-			to := m.scheduleWindow.AddDate(0, 0, 6)
-			return m, fetchScheduleCmd(m.client, from, to)
-		}
-		if m.activeSection == sectionUsers {
-			m.usersLoading = true
-			return m, fetchUsersCmd(m.client)
-		}
 		m.statusMsg = "Refreshing…"
-		return m, tea.Batch(
-			fetchAlertsCmd(m.client, m.filterStatus),
-			fetchStatsCmd(m.client),
-			clearStatusCmd(),
-		)
+		return m, tea.Batch(m.refreshActiveSection(), clearStatusCmd())
 
 	case "f":
-		if m.activeSection != sectionAlerts || !m.connected {
+		if !m.connected {
 			return m, nil
 		}
-		switch m.filterStatus {
-		case "firing":
-			m.filterStatus = "resolved"
-		case "resolved":
-			m.filterStatus = ""
-		default:
-			m.filterStatus = "firing"
+		switch m.activeSection {
+		case sectionIncidents:
+			m.incidentFilter = nextFilter(incidentFilters, m.incidentFilter)
+			m.loading = true
+			return m, fetchIncidentsCmd(m.client, m.incidentFilter)
+		case sectionAlerts:
+			m.alertFilter = nextFilter(alertFilters, m.alertFilter)
+			m.loading = true
+			return m, fetchAlertsCmd(m.client, m.alertFilter)
 		}
-		m.loading = true
-		return m, fetchAlertsCmd(m.client, m.filterStatus)
+		return m, nil
 
 	case "enter":
-		if m.activeSection == sectionAlerts && len(m.alerts) > 0 {
-			cursor := m.alertTable.Cursor()
-			if cursor >= 0 && cursor < len(m.alerts) {
-				m.selectedAlert = m.alerts[cursor]
-				m.mode = modeDetail
-				m.commentCursor = -1
-				m.detailLoading = true
-				m.detailViewport = viewport.New(m.width, m.detailViewportHeight())
-				return m, fetchAlertDetailCmd(m.client, m.selectedAlert.ID)
+		switch m.activeSection {
+		case sectionIncidents:
+			if inc, ok := m.incidentAtCursor(); ok {
+				return m.openIncident(inc)
 			}
-		}
-		if m.activeSection == sectionArchived && len(m.archivedAlerts) > 0 {
-			cursor := m.archivedTable.Cursor()
-			if cursor >= 0 && cursor < len(m.archivedAlerts) {
-				m.selectedAlert = m.archivedAlerts[cursor]
-				m.mode = modeDetail
-				m.commentCursor = -1
+		case sectionArchived:
+			if i := m.archivedTable.Cursor(); i >= 0 && i < len(m.archivedIncidents) {
+				return m.openIncident(m.archivedIncidents[i])
+			}
+		case sectionAlerts:
+			if i := m.alertTable.Cursor(); i >= 0 && i < len(m.alerts) {
+				m.selectedAlert = m.alerts[i]
+				m.mode = modeAlertDetail
 				m.detailLoading = true
 				m.detailViewport = viewport.New(m.width, m.detailViewportHeight())
 				return m, fetchAlertDetailCmd(m.client, m.selectedAlert.ID)
@@ -379,18 +399,23 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 	case "x":
 		switch m.activeSection {
-		case sectionAlerts:
-			cursor := m.alertTable.Cursor()
-			if cursor < 0 || cursor >= len(m.alerts) {
+		case sectionIncidents:
+			inc, ok := m.incidentAtCursor()
+			if !ok {
 				return m, nil
 			}
-			return m, archiveAlertCmd(m.client, m.alerts[cursor].ID, m.filterStatus)
+			if inc.IsOpen() {
+				m.statusMsg = "resolve the incident before archiving it"
+				return m, clearStatusCmd()
+			}
+			return m, archiveIncidentCmd(m.client, inc.ID, m.incidentFilter)
 		case sectionArchived:
-			cursor := m.archivedTable.Cursor()
-			if cursor < 0 || cursor >= len(m.archivedAlerts) {
+			i := m.archivedTable.Cursor()
+			if i < 0 || i >= len(m.archivedIncidents) {
 				return m, nil
 			}
-			return m, unarchiveAlertCmd(m.client, m.archivedAlerts[cursor].ID)
+			m.archivedLoading = true
+			return m, unarchiveIncidentCmd(m.client, m.archivedIncidents[i].ID)
 		}
 		return m, nil
 
@@ -399,9 +424,7 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if m.activeSection == sectionSchedule {
 			m.scheduleWindow = m.scheduleWindow.AddDate(0, 0, -7)
 			m.scheduleLoading = true
-			from := m.scheduleWindow
-			to := m.scheduleWindow.AddDate(0, 0, 6)
-			return m, fetchScheduleCmd(m.client, from, to)
+			return m, fetchScheduleCmd(m.client, m.scheduleWindow, m.scheduleWindow.AddDate(0, 0, 6))
 		}
 		return m, nil
 
@@ -409,9 +432,7 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if m.activeSection == sectionSchedule {
 			m.scheduleWindow = m.scheduleWindow.AddDate(0, 0, 7)
 			m.scheduleLoading = true
-			from := m.scheduleWindow
-			to := m.scheduleWindow.AddDate(0, 0, 6)
-			return m, fetchScheduleCmd(m.client, from, to)
+			return m, fetchScheduleCmd(m.client, m.scheduleWindow, m.scheduleWindow.AddDate(0, 0, 6))
 		}
 		return m, nil
 
@@ -420,26 +441,14 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		m.pickerAssignWeek = false
-		m.mode = modeScheduleUserPicker
-		if len(m.users) == 0 {
-			m.usersLoading = true
-			return m, fetchUsersCmd(m.client)
-		}
-		m.rebuildUserPickerTable()
-		return m, nil
+		return m.openUserPicker(pickerSchedule)
 
 	case "W":
 		if m.activeSection != sectionSchedule || !m.connected {
 			return m, nil
 		}
 		m.pickerAssignWeek = true
-		m.mode = modeScheduleUserPicker
-		if len(m.users) == 0 {
-			m.usersLoading = true
-			return m, fetchUsersCmd(m.client)
-		}
-		m.rebuildUserPickerTable()
-		return m, nil
+		return m.openUserPicker(pickerSchedule)
 
 	case "d":
 		switch m.activeSection {
@@ -458,7 +467,7 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			}
 			m.pendingDeleteEntry = day.entry
 			m.confirmTarget = confirmDeleteScheduleEntry
-			m.mode = modeConfirmDelete
+			m.mode = modeConfirm
 		case sectionUsers:
 			if !m.connected || len(m.users) == 0 {
 				return m, nil
@@ -469,9 +478,15 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			}
 			m.selectedUser = m.users[cursor]
 			m.confirmTarget = confirmDeleteUser
-			m.mode = modeConfirmDelete
+			m.mode = modeConfirm
 		}
 		return m, nil
+
+	case "S":
+		if !m.connected {
+			return m, nil
+		}
+		return m.openStats()
 
 	case "n":
 		if m.activeSection != sectionUsers || !m.connected {
@@ -501,9 +516,76 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// ── Detail ────────────────────────────────────────────────────────────────
+// loadSectionIfEmpty fetches a section's data the first time it is opened.
+func (m *Model) loadSectionIfEmpty() tea.Cmd {
+	switch m.activeSection {
+	case sectionAlerts:
+		if len(m.alerts) == 0 {
+			m.loading = true
+			return fetchAlertsCmd(m.client, m.alertFilter)
+		}
+	case sectionArchived:
+		if len(m.archivedIncidents) == 0 {
+			m.archivedLoading = true
+			return fetchArchivedIncidentsCmd(m.client)
+		}
+	case sectionSchedule:
+		if len(m.scheduleDays) == 0 {
+			m.scheduleLoading = true
+			return fetchScheduleCmd(m.client, m.scheduleWindow, m.scheduleWindow.AddDate(0, 0, 6))
+		}
+	case sectionUsers:
+		if len(m.users) == 0 {
+			m.usersLoading = true
+			return fetchUsersCmd(m.client)
+		}
+	}
+	return nil
+}
 
-func (m Model) handleDetailKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) incidentAtCursor() (api.Incident, bool) {
+	i := m.incidentTable.Cursor()
+	if i < 0 || i >= len(m.incidents) {
+		return api.Incident{}, false
+	}
+	return m.incidents[i], true
+}
+
+func (m Model) openIncident(inc api.Incident) (Model, tea.Cmd) {
+	m.selectedIncident = inc
+	m.mode = modeIncidentDetail
+	m.noteCursor = -1
+	m.detailLoading = true
+	m.detailViewport = viewport.New(m.width, m.detailViewportHeight())
+	return m, fetchIncidentDetailCmd(m.client, inc.ID)
+}
+
+func (m Model) openUserPicker(target pickerTarget) (Model, tea.Cmd) {
+	m.pickerTarget = target
+	m.mode = modeUserPicker
+	if len(m.users) == 0 {
+		m.usersLoading = true
+		return m, fetchUsersCmd(m.client)
+	}
+	m.rebuildUserPickerTable()
+	return m, nil
+}
+
+// nextFilter advances a filter cycle, wrapping at the end.
+func nextFilter(cycle []string, current string) string {
+	for i, f := range cycle {
+		if f == current {
+			return cycle[(i+1)%len(cycle)]
+		}
+	}
+	return cycle[0]
+}
+
+// ── Incident detail ───────────────────────────────────────────────────────
+
+func (m Model) handleIncidentDetailKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	inc := m.selectedIncident
+
 	switch msg.String() {
 	case "esc", "backspace":
 		m.mode = modeDashboard
@@ -511,152 +593,245 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 
 	case "a":
-		if m.activeSection != sectionAlerts {
-			return m, nil
+		if !inc.IsOpen() {
+			return m.rejectClosed()
 		}
-		if m.selectedAlert.AcknowledgedByID != nil {
-			m.statusMsg = "already acknowledged"
+		if inc.AcknowledgedByID != nil {
+			m.statusMsg = "already acknowledged by " + inc.AcknowledgedBy
 			return m, clearStatusCmd()
 		}
-		return m, acknowledgeCmd(m.client, m.selectedAlert.ID)
+		return m, acknowledgeIncidentCmd(m.client, inc.ID)
 
 	case "A":
-		if m.activeSection != sectionAlerts {
-			return m, nil
+		if !inc.IsOpen() {
+			return m.rejectClosed()
 		}
-		if m.selectedAlert.AcknowledgedByID == nil {
+		if inc.AcknowledgedByID == nil {
 			m.statusMsg = "not acknowledged"
 			return m, clearStatusCmd()
 		}
-		return m, unacknowledgeCmd(m.client, m.selectedAlert.ID)
+		return m, unacknowledgeIncidentCmd(m.client, inc.ID)
 
-	case "x":
-		if m.activeSection == sectionAlerts {
-			return m, archiveAlertCmd(m.client, m.selectedAlert.ID, m.filterStatus)
+	case "R":
+		if !inc.IsOpen() {
+			return m.rejectClosed()
 		}
-		if m.activeSection == sectionArchived {
-			return m, unarchiveAlertCmd(m.client, m.selectedAlert.ID)
-		}
+		m.confirmTarget = confirmResolveIncident
+		m.mode = modeConfirm
 		return m, nil
 
+	case "s":
+		if !inc.IsOpen() {
+			return m.rejectClosed()
+		}
+		return m.openUserPicker(pickerIncidentAssignee)
+
+	case "z":
+		if !inc.IsOpen() {
+			return m.rejectClosed()
+		}
+		m.mode = modeSnooze
+		m.snoozeInput.Reset()
+		m.snoozeInput.Focus()
+		m.detailViewport.Height = m.detailViewportHeight()
+		return m, nil
+
+	case "Z":
+		if !inc.IsOpen() {
+			return m.rejectClosed()
+		}
+		if !inc.IsSnoozed() {
+			m.statusMsg = "not snoozed"
+			return m, clearStatusCmd()
+		}
+		return m, unsnoozeIncidentCmd(m.client, inc.ID)
+
+	case "x":
+		if inc.IsOpen() {
+			m.statusMsg = "resolve the incident before archiving it"
+			return m, clearStatusCmd()
+		}
+		if inc.ArchivedAt != nil {
+			m.archivedLoading = true
+			m.mode = modeDashboard
+			return m, unarchiveIncidentCmd(m.client, inc.ID)
+		}
+		m.mode = modeDashboard
+		return m, archiveIncidentCmd(m.client, inc.ID, m.incidentFilter)
+
 	case "c":
-		m.mode = modeComment
-		m.commentInput.Reset()
-		m.commentInput.Focus()
+		m.mode = modeNote
+		m.noteInput.Reset()
+		m.noteInput.Focus()
 		m.detailViewport.Height = m.detailViewportHeight()
 		return m, nil
 
 	case "d":
-		if m.commentCursor < 0 || m.commentCursor >= len(m.comments) {
-			m.statusMsg = "select a comment first with [ / ]"
+		notes := noteEvents(m.timeline)
+		if m.noteCursor < 0 || m.noteCursor >= len(notes) {
+			m.statusMsg = "select a note first with [ / ]"
 			return m, clearStatusCmd()
 		}
-		m.pendingDeleteID = m.comments[m.commentCursor].ID
-		m.confirmTarget = confirmDeleteComment
-		m.mode = modeConfirmDelete
+		m.pendingDeleteID = notes[m.noteCursor].ID
+		m.confirmTarget = confirmDeleteNote
+		m.mode = modeConfirm
 		return m, nil
-
-	case "s":
-		m.statusMsg = "assign not yet supported by server"
-		return m, clearStatusCmd()
 
 	case "S":
-		m.mode = modeStats
-		m.statsLoading = true
-		m.statsViewport = viewport.New(m.width, m.height-5)
-		return m, fetchDetailStatsCmd(m.client)
+		return m.openStats()
 
 	case "[":
-		if len(m.comments) == 0 {
-			return m, nil
-		}
-		if m.commentCursor <= 0 {
-			m.commentCursor = len(m.comments) - 1
-		} else {
-			m.commentCursor--
-		}
-		m.refreshDetailContent()
-		return m, nil
+		return m.moveNoteCursor(-1), nil
 
 	case "]":
-		if len(m.comments) == 0 {
-			return m, nil
-		}
-		if m.commentCursor >= len(m.comments)-1 {
-			m.commentCursor = 0
-		} else {
-			m.commentCursor++
-		}
-		m.refreshDetailContent()
-		return m, nil
+		return m.moveNoteCursor(1), nil
 	}
 
 	return m, nil
 }
 
-// ── Comment compose ───────────────────────────────────────────────────────
+// rejectClosed reports why an action did nothing on a resolved incident. The
+// server answers 409 anyway; saying so up front is friendlier than a round trip.
+func (m Model) rejectClosed() (Model, tea.Cmd) {
+	m.statusMsg = "incident is resolved — a new occurrence opens a new incident"
+	return m, clearStatusCmd()
+}
 
-func (m Model) handleCommentKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) moveNoteCursor(delta int) Model {
+	notes := noteEvents(m.timeline)
+	if len(notes) == 0 {
+		return m
+	}
+	switch {
+	case m.noteCursor < 0:
+		if delta > 0 {
+			m.noteCursor = 0
+		} else {
+			m.noteCursor = len(notes) - 1
+		}
+	default:
+		m.noteCursor = (m.noteCursor + delta + len(notes)) % len(notes)
+	}
+	m.refreshDetailContent()
+	return m
+}
+
+// ── Alert detail (read-only) ──────────────────────────────────────────────
+
+func (m Model) handleAlertDetailKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "backspace":
+		m.mode = modeDashboard
+		m.statusMsg = ""
+		return m, nil
+
+	case "i":
+		// Jump to the incident this alert belongs to — the place where anything
+		// can actually be done about it.
+		if m.selectedAlert.IncidentID == nil {
+			m.statusMsg = "this alert has no incident"
+			return m, clearStatusCmd()
+		}
+		return m.openIncident(api.Incident{ID: *m.selectedAlert.IncidentID})
+
+	case "S":
+		return m.openStats()
+	}
+
+	return m, nil
+}
+
+// ── Note compose ──────────────────────────────────────────────────────────
+
+func (m Model) handleNoteKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		m.mode = modeDetail
-		m.commentInput.Blur()
+		m.mode = modeIncidentDetail
+		m.noteInput.Blur()
 		m.detailViewport.Height = m.detailViewportHeight()
 		return m, nil
 
 	case "enter":
-		content := strings.TrimSpace(m.commentInput.Value())
+		content := strings.TrimSpace(m.noteInput.Value())
 		if content == "" {
 			return m, nil
 		}
-		m.mode = modeDetail
-		m.commentInput.Blur()
+		m.mode = modeIncidentDetail
+		m.noteInput.Blur()
 		m.detailViewport.Height = m.detailViewportHeight()
-		return m, addCommentCmd(m.client, m.selectedAlert.ID, content)
+		return m, addNoteCmd(m.client, m.selectedIncident.ID, content)
 	}
 
 	return m, nil
 }
 
-// ── Confirm delete ────────────────────────────────────────────────────────
+// ── Snooze ────────────────────────────────────────────────────────────────
+
+func (m Model) handleSnoozeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeIncidentDetail
+		m.snoozeInput.Blur()
+		m.detailViewport.Height = m.detailViewportHeight()
+		return m, nil
+
+	case "enter":
+		duration := strings.TrimSpace(m.snoozeInput.Value())
+		if duration == "" {
+			return m, nil
+		}
+		m.mode = modeIncidentDetail
+		m.snoozeInput.Blur()
+		m.detailViewport.Height = m.detailViewportHeight()
+		return m, snoozeIncidentCmd(m.client, m.selectedIncident.ID, duration)
+	}
+
+	return m, nil
+}
+
+// ── Confirm ───────────────────────────────────────────────────────────────
 
 func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd) {
-	switch strings.ToLower(msg.String()) {
-	case "y":
+	if strings.ToLower(msg.String()) != "y" {
 		switch m.confirmTarget {
-		case confirmDeleteComment:
-			alertID := m.selectedAlert.ID
-			commentID := m.pendingDeleteID
-			m.mode = modeDetail
-			m.commentCursor = -1
-			m.pendingDeleteID = 0
-			return m, deleteCommentCmd(m.client, alertID, commentID)
-		case confirmDeleteScheduleEntry:
-			entry := m.pendingDeleteEntry
-			m.mode = modeDashboard
-			m.pendingDeleteEntry = nil
-			m.scheduleLoading = true
-			from := m.scheduleWindow
-			to := m.scheduleWindow.AddDate(0, 0, 6)
-			return m, deleteScheduleEntryCmd(m.client, entry.ID, from, to)
-		case confirmDeleteUser:
-			userID := m.selectedUser.ID
-			m.mode = modeDashboard
-			m.usersLoading = true
-			return m, deleteUserCmd(m.client, userID)
-		}
-	default:
-		switch m.confirmTarget {
-		case confirmDeleteComment:
-			m.mode = modeDetail
-		case confirmDeleteScheduleEntry:
-			m.mode = modeDashboard
-		case confirmDeleteUser:
+		case confirmDeleteNote, confirmResolveIncident:
+			m.mode = modeIncidentDetail
+		default:
 			m.mode = modeDashboard
 		}
 		m.pendingDeleteID = 0
 		m.pendingDeleteEntry = nil
+		return m, nil
 	}
+
+	switch m.confirmTarget {
+	case confirmDeleteNote:
+		incidentID := m.selectedIncident.ID
+		eventID := m.pendingDeleteID
+		m.mode = modeIncidentDetail
+		m.noteCursor = -1
+		m.pendingDeleteID = 0
+		return m, deleteNoteCmd(m.client, incidentID, eventID)
+
+	case confirmResolveIncident:
+		m.mode = modeIncidentDetail
+		return m, resolveIncidentCmd(m.client, m.selectedIncident.ID)
+
+	case confirmDeleteScheduleEntry:
+		entry := m.pendingDeleteEntry
+		m.mode = modeDashboard
+		m.pendingDeleteEntry = nil
+		m.scheduleLoading = true
+		return m, deleteScheduleEntryCmd(m.client, entry.ID,
+			m.scheduleWindow, m.scheduleWindow.AddDate(0, 0, 6))
+
+	case confirmDeleteUser:
+		userID := m.selectedUser.ID
+		m.mode = modeDashboard
+		m.usersLoading = true
+		return m, deleteUserCmd(m.client, userID)
+	}
+
 	return m, nil
 }
 
@@ -664,10 +839,19 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 func (m Model) handleStatsKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if msg.String() == "esc" {
-		m.mode = modeDetail
+		m.mode = m.statsReturnMode
 		return m, nil
 	}
 	return m, nil
+}
+
+// openStats enters the statistics view, remembering where to go back to.
+func (m Model) openStats() (Model, tea.Cmd) {
+	m.statsReturnMode = m.mode
+	m.mode = modeStats
+	m.statsLoading = true
+	m.statsViewport = viewport.New(m.width, m.height-5)
+	return m, fetchDetailStatsCmd(m.client)
 }
 
 // ── User picker ───────────────────────────────────────────────────────────
@@ -675,15 +859,25 @@ func (m Model) handleStatsKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 func (m Model) handleUserPickerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		m.mode = modeDashboard
+		if m.pickerTarget == pickerIncidentAssignee {
+			m.mode = modeIncidentDetail
+		} else {
+			m.mode = modeDashboard
+		}
 		return m, nil
 
 	case "enter":
 		cursor := m.userPickerTable.Cursor()
-		if cursor >= len(m.users) {
+		if cursor < 0 || cursor >= len(m.users) {
 			return m, nil
 		}
 		user := m.users[cursor]
+
+		if m.pickerTarget == pickerIncidentAssignee {
+			m.mode = modeIncidentDetail
+			return m, assignIncidentCmd(m.client, m.selectedIncident.ID, user.ID)
+		}
+
 		scheduleCursor := m.scheduleTable.Cursor()
 		if scheduleCursor >= len(m.scheduleDays) {
 			m.mode = modeDashboard
@@ -703,11 +897,10 @@ func (m Model) handleUserPickerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		} else {
 			dates = []string{d.Format("2006-01-02")}
 		}
-		from := m.scheduleWindow
-		to := m.scheduleWindow.AddDate(0, 0, 6)
 		m.mode = modeDashboard
 		m.scheduleLoading = true
-		return m, assignScheduleCmd(m.client, user.ID, dates, from, to)
+		return m, assignScheduleCmd(m.client, user.ID, dates,
+			m.scheduleWindow, m.scheduleWindow.AddDate(0, 0, 6))
 	}
 
 	return m, nil

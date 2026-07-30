@@ -63,6 +63,10 @@ func (c *Client) do(req *http.Request, out any) error {
 
 // ListAlerts fetches alerts. status may be "firing", "resolved", or "" for all.
 // Set archived=true to fetch only archived alerts; false returns only non-archived.
+//
+// Alerts are read-only on the server — there is nothing to acknowledge or
+// archive here. This is the raw feed, useful for checking what Alertmanager is
+// actually sending; the work queue is ListIncidents.
 func (c *Client) ListAlerts(status string, archived bool, limit int) ([]Alert, error) {
 	q := url.Values{}
 	if status != "" {
@@ -85,23 +89,6 @@ func (c *Client) ListAlerts(status string, archived bool, limit int) ([]Alert, e
 	}
 	var alerts []Alert
 	return alerts, c.do(req, &alerts)
-}
-
-func (c *Client) ArchiveAlert(id int64) (*Alert, error) {
-	req, err := c.newRequest(http.MethodPost, fmt.Sprintf("/api/alerts/%d/archive", id))
-	if err != nil {
-		return nil, err
-	}
-	var alert Alert
-	return &alert, c.do(req, &alert)
-}
-
-func (c *Client) UnarchiveAlert(id int64) error {
-	req, err := c.newRequest(http.MethodDelete, fmt.Sprintf("/api/alerts/%d/archive", id))
-	if err != nil {
-		return err
-	}
-	return c.do(req, nil)
 }
 
 // GetAlertStats fetches aggregate alert counts.
@@ -138,48 +125,171 @@ func (c *Client) GetAlert(id int64) (*Alert, error) {
 	return &alert, c.do(req, &alert)
 }
 
-func (c *Client) AcknowledgeAlert(id int64) (*Alert, error) {
-	req, err := c.newRequest(http.MethodPost, fmt.Sprintf("/api/alerts/%d/acknowledge", id))
+// ── Incidents ──────────────────────────────────────────────────────────────
+
+// ListIncidents fetches the work queue. status may be "triggered",
+// "acknowledged", "resolved", or "" for the server default of open incidents
+// only. archived and snoozed each switch the list to that set rather than
+// adding to it, matching the server's filters.
+func (c *Client) ListIncidents(status string, archived, snoozed bool, limit int) ([]Incident, error) {
+	q := url.Values{}
+	if status != "" {
+		q.Set("status", status)
+	}
+	if archived {
+		q.Set("archived", "true")
+	}
+	if snoozed {
+		q.Set("snoozed", "true")
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	path := "/api/incidents"
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+
+	req, err := c.newRequest(http.MethodGet, path)
 	if err != nil {
 		return nil, err
 	}
-	var alert Alert
-	return &alert, c.do(req, &alert)
+	var incidents []Incident
+	return incidents, c.do(req, &incidents)
 }
 
-func (c *Client) UnacknowledgeAlert(id int64) error {
-	req, err := c.newRequest(http.MethodDelete, fmt.Sprintf("/api/alerts/%d/acknowledge", id))
+// GetIncident returns one incident with its member alerts inline.
+func (c *Client) GetIncident(id int64) (*Incident, error) {
+	req, err := c.newRequest(http.MethodGet, fmt.Sprintf("/api/incidents/%d", id))
+	if err != nil {
+		return nil, err
+	}
+	var incident Incident
+	return &incident, c.do(req, &incident)
+}
+
+func (c *Client) GetIncidentTimeline(id int64) ([]IncidentEvent, error) {
+	req, err := c.newRequest(http.MethodGet, fmt.Sprintf("/api/incidents/%d/timeline", id))
+	if err != nil {
+		return nil, err
+	}
+	var events []IncidentEvent
+	return events, c.do(req, &events)
+}
+
+func (c *Client) AcknowledgeIncident(id int64) (*Incident, error) {
+	req, err := c.newRequest(http.MethodPost, fmt.Sprintf("/api/incidents/%d/acknowledge", id))
+	if err != nil {
+		return nil, err
+	}
+	var incident Incident
+	return &incident, c.do(req, &incident)
+}
+
+func (c *Client) UnacknowledgeIncident(id int64) error {
+	req, err := c.newRequest(http.MethodDelete, fmt.Sprintf("/api/incidents/%d/acknowledge", id))
 	if err != nil {
 		return err
 	}
 	return c.do(req, nil)
 }
 
-func (c *Client) GetComments(alertID int64) ([]Comment, error) {
-	req, err := c.newRequest(http.MethodGet, fmt.Sprintf("/api/alerts/%d/comments", alertID))
+// ResolveIncident closes an incident by hand. This is terminal on the server: a
+// later occurrence in the same group opens a new incident rather than reopening
+// this one, and if the alert underneath never stops firing the incident stays
+// closed. Use SnoozeIncident for "not now".
+func (c *Client) ResolveIncident(id int64) (*Incident, error) {
+	req, err := c.newRequest(http.MethodPost, fmt.Sprintf("/api/incidents/%d/resolve", id))
 	if err != nil {
 		return nil, err
 	}
-	var comments []Comment
-	return comments, c.do(req, &comments)
+	var incident Incident
+	return &incident, c.do(req, &incident)
 }
 
-func (c *Client) AddComment(alertID int64, content string) (*Comment, error) {
-	req, err := c.newRequestWithBody(http.MethodPost, fmt.Sprintf("/api/alerts/%d/comments", alertID), map[string]string{"content": content})
+func (c *Client) AssignIncident(id, userID int64) (*Incident, error) {
+	body := struct {
+		UserID int64 `json:"user_id"`
+	}{UserID: userID}
+	req, err := c.newRequestWithBody(http.MethodPost, fmt.Sprintf("/api/incidents/%d/assign", id), body)
 	if err != nil {
 		return nil, err
 	}
-	var comment Comment
-	return &comment, c.do(req, &comment)
+	var incident Incident
+	return &incident, c.do(req, &incident)
 }
 
-func (c *Client) DeleteComment(alertID, commentID int64) error {
-	req, err := c.newRequest(http.MethodDelete, fmt.Sprintf("/api/alerts/%d/comments/%d", alertID, commentID))
+// SnoozeIncident hides an incident from the default queue for a duration,
+// without closing it.
+func (c *Client) SnoozeIncident(id int64, duration string) (*Incident, error) {
+	body := struct {
+		Duration string `json:"duration"`
+	}{Duration: duration}
+	req, err := c.newRequestWithBody(http.MethodPost, fmt.Sprintf("/api/incidents/%d/snooze", id), body)
+	if err != nil {
+		return nil, err
+	}
+	var incident Incident
+	return &incident, c.do(req, &incident)
+}
+
+func (c *Client) UnsnoozeIncident(id int64) error {
+	req, err := c.newRequest(http.MethodDelete, fmt.Sprintf("/api/incidents/%d/snooze", id))
 	if err != nil {
 		return err
 	}
 	return c.do(req, nil)
 }
+
+func (c *Client) ArchiveIncident(id int64) (*Incident, error) {
+	req, err := c.newRequest(http.MethodPost, fmt.Sprintf("/api/incidents/%d/archive", id))
+	if err != nil {
+		return nil, err
+	}
+	var incident Incident
+	return &incident, c.do(req, &incident)
+}
+
+func (c *Client) UnarchiveIncident(id int64) error {
+	req, err := c.newRequest(http.MethodDelete, fmt.Sprintf("/api/incidents/%d/archive", id))
+	if err != nil {
+		return err
+	}
+	return c.do(req, nil)
+}
+
+// AddNote appends a note to the incident's timeline.
+func (c *Client) AddNote(incidentID int64, content string) (*IncidentEvent, error) {
+	req, err := c.newRequestWithBody(http.MethodPost,
+		fmt.Sprintf("/api/incidents/%d/notes", incidentID), map[string]string{"content": content})
+	if err != nil {
+		return nil, err
+	}
+	var event IncidentEvent
+	return &event, c.do(req, &event)
+}
+
+// DeleteNote removes one of your own notes. Only notes are deletable — the rest
+// of the timeline is a record of what happened.
+func (c *Client) DeleteNote(incidentID, eventID int64) error {
+	req, err := c.newRequest(http.MethodDelete,
+		fmt.Sprintf("/api/incidents/%d/notes/%d", incidentID, eventID))
+	if err != nil {
+		return err
+	}
+	return c.do(req, nil)
+}
+
+func (c *Client) GetIncidentStats() (*IncidentStats, error) {
+	req, err := c.newRequest(http.MethodGet, "/api/stats/incidents")
+	if err != nil {
+		return nil, err
+	}
+	var stats IncidentStats
+	return &stats, c.do(req, &stats)
+}
+
+// ── Statistics ─────────────────────────────────────────────────────────────
 
 func (c *Client) GetTopAlerts(limit int) ([]TopAlert, error) {
 	req, err := c.newRequest(http.MethodGet, fmt.Sprintf("/api/stats/alerts/top?limit=%d", limit))
@@ -232,7 +342,9 @@ func (c *Client) GetCurrentOnCall() (*ScheduleEntry, error) {
 		return nil, nil
 	}
 	if resp.StatusCode >= 400 {
-		var e struct{ Error string `json:"error"` }
+		var e struct {
+			Error string `json:"error"`
+		}
 		_ = json.NewDecoder(resp.Body).Decode(&e)
 		if e.Error != "" {
 			return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, e.Error)
