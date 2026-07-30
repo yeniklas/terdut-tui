@@ -340,18 +340,21 @@ func (m Model) detailViewportHeight() int {
 // ── Column definitions ─────────────────────────────────────────────────────
 
 func alertColumns(width int) []table.Column {
-	nameW := width/2 - 8
+	const statusW, timeW = 10, 12
+	nameW := width/2 - 14
 	if nameW < 20 {
 		nameW = 20
 	}
-	ackW := width - nameW - 10 - 12 - 6
+	// 10 = bubbles' Padding(0, 1) on each of the five cells.
+	ackW := width - nameW - statusW - 2*timeW - 10
 	if ackW < 8 {
 		ackW = 8
 	}
 	return []table.Column{
 		{Title: "Name", Width: nameW},
-		{Title: "Status", Width: 10},
-		{Title: "Started", Width: 12},
+		{Title: "Status", Width: statusW},
+		{Title: "Started", Width: timeW},
+		{Title: "Last Seen", Width: timeW},
 		{Title: "Ack By", Width: ackW},
 	}
 }
@@ -400,7 +403,7 @@ func alertRows(alerts []api.Alert) []table.Row {
 	now := time.Now()
 	rows := make([]table.Row, len(alerts))
 	for i, a := range alerts {
-		rows[i] = table.Row{a.Name, a.Status, humanAgo(now, a.StartsAt), a.AcknowledgedBy}
+		rows[i] = table.Row{a.Name, a.Status, humanAgo(now, a.StartsAt), humanAgo(now, a.ReceivedAt), a.AcknowledgedBy}
 	}
 	return rows
 }

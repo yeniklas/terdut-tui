@@ -17,6 +17,11 @@ type Alert struct {
 	AcknowledgedBy   string            `json:"acknowledged_by"`
 	AcknowledgedAt   *time.Time        `json:"acknowledged_at"`
 	ArchivedAt       *time.Time        `json:"archived_at,omitempty"`
+
+	// ResolutionSource records why a resolved alert left the firing state:
+	// "alertmanager" for a real resolved webhook, "expiry" when the server
+	// inferred it after the alert stopped being refreshed.
+	ResolutionSource *string `json:"resolution_source,omitempty"`
 }
 
 type AlertStats struct {

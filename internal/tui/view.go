@@ -381,7 +381,11 @@ func buildDetailContent(alert api.Alert, comments []api.Comment, cursor, width i
 	if alert.Status == "firing" {
 		statusStr = styleFiring.Render("● FIRING")
 	} else {
-		statusStr = styleResolved.Render("✓ RESOLVED")
+		label := "✓ RESOLVED"
+		if alert.ResolutionSource != nil {
+			label += " · " + *alert.ResolutionSource
+		}
+		statusStr = styleResolved.Render(label)
 	}
 	nameGap := contentW - lipgloss.Width(name) - lipgloss.Width(statusStr)
 	if nameGap < 1 {
@@ -390,17 +394,19 @@ func buildDetailContent(alert api.Alert, comments []api.Comment, cursor, width i
 	b.WriteString("\n  " + name + strings.Repeat(" ", nameGap) + statusStr + "\n\n")
 
 	// Timeline
-	b.WriteString(fmt.Sprintf("  Started:  %s  (%s)\n",
+	b.WriteString(fmt.Sprintf("  Started:    %s  (%s)\n",
 		alert.StartsAt.UTC().Format("2006-01-02 15:04 UTC"), humanAgo(now, alert.StartsAt)))
+	b.WriteString(fmt.Sprintf("  Last Seen:  %s  (%s)\n",
+		alert.ReceivedAt.UTC().Format("2006-01-02 15:04 UTC"), humanAgo(now, alert.ReceivedAt)))
 	if alert.EndsAt != nil {
-		b.WriteString(fmt.Sprintf("  Ended:    %s\n", alert.EndsAt.UTC().Format("2006-01-02 15:04 UTC")))
+		b.WriteString(fmt.Sprintf("  Ended:      %s\n", alert.EndsAt.UTC().Format("2006-01-02 15:04 UTC")))
 	}
 	if alert.GeneratorURL != "" {
 		url := alert.GeneratorURL
 		if len(url) > contentW-12 {
 			url = url[:contentW-15] + "…"
 		}
-		b.WriteString(fmt.Sprintf("  Source:   %s\n", url))
+		b.WriteString(fmt.Sprintf("  Source:     %s\n", url))
 	}
 	b.WriteString("\n")
 
