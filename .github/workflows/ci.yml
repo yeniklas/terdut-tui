@@ -1,0 +1,32 @@
+name: CI
+
+# The release workflow gates a tag, which is late: a broken commit sits green
+# until somebody decides to publish. This runs the same checks on the way in.
+#
+# push is scoped to main so that a branch pushed as part of a pull request is
+# not checked twice.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A rapid series of pushes only needs the last one checked.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
