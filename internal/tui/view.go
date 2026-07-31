@@ -365,6 +365,16 @@ func (m Model) renderStats() string {
 	return m.statsViewport.View()
 }
 
+// line renders s in a style and terminates it.
+//
+// The newline has to stay outside Render: lipgloss pads every line of a styled
+// block out to its widest line, so a trailing newline inside the block produces
+// a second line made entirely of padding, and whatever is written next starts
+// after that padding instead of at the left margin.
+func line(style lipgloss.Style, s string) string {
+	return style.Render(s) + "\n"
+}
+
 // ── Content builders ───────────────────────────────────────────────────────
 
 func buildIncidentDetailContent(inc api.Incident, timeline []api.IncidentEvent, cursor, width int) string {
@@ -391,7 +401,7 @@ func buildIncidentDetailContent(inc api.Incident, timeline []api.IncidentEvent, 
 	if inc.AssignedTo != "" {
 		b.WriteString(fmt.Sprintf("  Assigned:   %s\n", styleBold.Render(inc.AssignedTo)))
 	} else {
-		b.WriteString(styleMuted.Render("  Assigned:   nobody\n"))
+		b.WriteString(line(styleMuted, "  Assigned:   nobody"))
 	}
 
 	if inc.AcknowledgedByID != nil {
@@ -399,14 +409,14 @@ func buildIncidentDetailContent(inc api.Incident, timeline []api.IncidentEvent, 
 		if inc.AcknowledgedAt != nil {
 			ackAt = "  at " + inc.AcknowledgedAt.UTC().Format("2006-01-02 15:04 UTC")
 		}
-		b.WriteString(styleResolved.Render(
-			fmt.Sprintf("  Acked:      %s%s\n", inc.AcknowledgedBy, ackAt)))
+		b.WriteString(line(styleResolved,
+			fmt.Sprintf("  Acked:      %s%s", inc.AcknowledgedBy, ackAt)))
 	} else {
-		b.WriteString(styleMuted.Render("  Acked:      not acknowledged\n"))
+		b.WriteString(line(styleMuted, "  Acked:      not acknowledged"))
 	}
 
 	if inc.IsSnoozed() {
-		b.WriteString(styleSnoozed.Render(fmt.Sprintf("  Snoozed:    until %s  (%s)\n",
+		b.WriteString(line(styleSnoozed, fmt.Sprintf("  Snoozed:    until %s  (%s)",
 			inc.SnoozedUntil.UTC().Format("2006-01-02 15:04 UTC"), humanUntil(now, *inc.SnoozedUntil))))
 	}
 
@@ -419,8 +429,8 @@ func buildIncidentDetailContent(inc api.Incident, timeline []api.IncidentEvent, 
 			inc.ResolvedAt.UTC().Format("2006-01-02 15:04 UTC"), humanAgo(now, *inc.ResolvedAt), source))
 	}
 	if inc.ArchivedAt != nil {
-		b.WriteString(styleMuted.Render("  Archived:   " +
-			inc.ArchivedAt.UTC().Format("2006-01-02 15:04 UTC") + "\n"))
+		b.WriteString(line(styleMuted, "  Archived:   "+
+			inc.ArchivedAt.UTC().Format("2006-01-02 15:04 UTC")))
 	}
 	b.WriteString("\n")
 
@@ -436,7 +446,7 @@ func buildIncidentDetailContent(inc api.Incident, timeline []api.IncidentEvent, 
 	// Member alerts
 	b.WriteString(divider(fmt.Sprintf("Alerts (%d)", len(inc.Alerts)), width))
 	if len(inc.Alerts) == 0 {
-		b.WriteString(styleMuted.Render("  No alerts.\n"))
+		b.WriteString(line(styleMuted, "  No alerts."))
 	} else {
 		for _, a := range inc.Alerts {
 			marker := styleFiring.Render("●")
@@ -458,7 +468,7 @@ func buildIncidentDetailContent(inc api.Incident, timeline []api.IncidentEvent, 
 	notes := noteEvents(timeline)
 	b.WriteString(divider(fmt.Sprintf("Timeline (%d events, %d notes)", len(timeline), len(notes)), width))
 	if len(timeline) == 0 {
-		b.WriteString(styleMuted.Render("  Nothing recorded yet.\n"))
+		b.WriteString(line(styleMuted, "  Nothing recorded yet."))
 	} else {
 		noteIndex := 0
 		for _, e := range timeline {
@@ -584,7 +594,7 @@ func buildAlertDetailContent(alert api.Alert, width int) string {
 			styleBold.Render(fmt.Sprintf("#%d", *alert.IncidentID)),
 			styleMuted.Render("press i to open it")))
 	} else {
-		b.WriteString(styleMuted.Render("  Incident:   none\n"))
+		b.WriteString(line(styleMuted, "  Incident:   none"))
 	}
 	b.WriteString("\n")
 
@@ -606,8 +616,8 @@ func buildAlertDetailContent(alert api.Alert, width int) string {
 
 	// Alerts carry no workflow state: it all lives on the incident.
 	b.WriteString(divider("", width))
-	b.WriteString(styleMuted.Render(
-		"  Alerts are read-only — acknowledge, assign, note and resolve on the incident.\n"))
+	b.WriteString(line(styleMuted,
+		"  Alerts are read-only — acknowledge, assign, note and resolve on the incident."))
 
 	return b.String()
 }
@@ -627,7 +637,7 @@ func buildStatsContent(incidents *api.IncidentStats, top []api.TopAlert, byHour 
 	// Response times first: they are what a rota is actually judged on.
 	b.WriteString(divider("Incident Response", width))
 	if incidents == nil {
-		b.WriteString(styleMuted.Render("  No data.\n"))
+		b.WriteString(line(styleMuted, "  No data."))
 	} else {
 		b.WriteString(fmt.Sprintf("  %-28s %s\n", "Incidents total",
 			styleBold.Render(fmt.Sprintf("%d", incidents.Total))))
@@ -642,14 +652,14 @@ func buildStatsContent(incidents *api.IncidentStats, top []api.TopAlert, byHour 
 		b.WriteString(fmt.Sprintf("  %-28s %s\n", "Mean time to resolve",
 			styleBold.Render(humanSeconds(incidents.MTTRSeconds))))
 		if incidents.MTTASeconds == nil || incidents.MTTRSeconds == nil {
-			b.WriteString(styleMuted.Render("  (— means nothing has been acknowledged or resolved yet)\n"))
+			b.WriteString(line(styleMuted, "  (— means nothing has been acknowledged or resolved yet)"))
 		}
 	}
 	b.WriteString("\n")
 
 	b.WriteString(divider("Top Alerts", width))
 	if len(top) == 0 {
-		b.WriteString(styleMuted.Render("  No data.\n"))
+		b.WriteString(line(styleMuted, "  No data."))
 	} else {
 		maxCount := top[0].Count
 		for i, a := range top {
@@ -672,7 +682,7 @@ func buildStatsContent(incidents *api.IncidentStats, top []api.TopAlert, byHour 
 			b.WriteString(fmt.Sprintf("  %2dh  %-*s %d\n", h.Hour, barWidth, bar, h.Count))
 		}
 	} else {
-		b.WriteString(styleMuted.Render("  No data.\n"))
+		b.WriteString(line(styleMuted, "  No data."))
 	}
 	b.WriteString("\n")
 
@@ -689,7 +699,7 @@ func buildStatsContent(incidents *api.IncidentStats, top []api.TopAlert, byHour 
 			b.WriteString(fmt.Sprintf("  %-4s  %-*s %d\n", d.DayName[:3], barWidth, bar, d.Count))
 		}
 	} else {
-		b.WriteString(styleMuted.Render("  No data.\n"))
+		b.WriteString(line(styleMuted, "  No data."))
 	}
 
 	return b.String()
@@ -723,7 +733,7 @@ func (m Model) renderUserCreate() string {
 
 func (m Model) renderAPIKeyMenu() string {
 	header := fmt.Sprintf("\n  API keys for %s\n", styleBold.Render(m.selectedUser.Username))
-	warning := styleMuted.Render("  Keys cannot be listed — only new keys can be created,\n  or existing ones revoked by their integer ID.\n")
+	warning := line(styleMuted, "  Keys cannot be listed — only new keys can be created,\n  or existing ones revoked by their integer ID.")
 	options := "\n" +
 		styleAccent.Render("  n") + "  · create a new API key\n" +
 		styleAccent.Render("  r") + "  · revoke a key by ID\n"
@@ -757,7 +767,7 @@ func (m Model) renderAPIKeyReveal() string {
 
 func (m Model) renderAPIKeyRevokeByID() string {
 	header := fmt.Sprintf("\n  Revoke API key for %s\n", styleBold.Render(m.selectedUser.Username))
-	hint := styleMuted.Render("  Enter the integer key ID (shown when the key was created).\n")
+	hint := line(styleMuted, "  Enter the integer key ID (shown when the key was created).")
 	label := styleSelected.Render("  Key ID:  ")
 	return header + "\n" + hint + "\n" + label + m.apiKeyRevokeInput.View() + "\n"
 }
