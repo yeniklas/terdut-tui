@@ -6,7 +6,26 @@ on:
       - 'v*'
 
 jobs:
+  # Gates the build, so a tag that fails here publishes no binaries. The suite
+  # covers the API client against a stub server, the Update state machine, and
+  # View rendering — all three are pure enough to test without a terminal.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     strategy:
       matrix:
