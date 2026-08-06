@@ -78,8 +78,9 @@ Global:
 | `esc` | Go back |
 | `r` | Refresh |
 | `f` | Cycle filter |
-| `S` | Statistics |
 | `q` | Quit |
+
+The sections, in `tab` order: Incidents · Alerts · Stats · Archived · Schedule · Users.
 
 Incidents section:
 
@@ -107,6 +108,12 @@ Alerts section (read-only):
 |-----|--------|
 | `f` | Cycle: firing → resolved → all → archived |
 | `i` | In detail: jump to the alert's incident |
+
+Stats section:
+
+| Key | Action |
+|-----|--------|
+| `j` / `k`, `pgup` / `pgdn` | Scroll |
 
 Schedule section:
 

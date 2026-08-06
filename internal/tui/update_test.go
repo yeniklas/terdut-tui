@@ -315,7 +315,8 @@ func TestTab_CyclesEverySection(t *testing.T) {
 		t.Fatal("incidents is the section the client opens on")
 	}
 
-	want := []section{sectionAlerts, sectionArchived, sectionSchedule, sectionUsers, sectionIncidents}
+	want := []section{sectionAlerts, sectionStats, sectionArchived, sectionSchedule,
+		sectionUsers, sectionIncidents}
 	for i, expected := range want {
 		m, _ = press(t, m, "tab")
 		if m.activeSection != expected {
@@ -341,30 +342,54 @@ func TestFilter_CyclesPerSection(t *testing.T) {
 	}
 }
 
-// Stats opens from both the queue and an incident, and esc has to go back to
-// wherever it was opened from.
-func TestStats_ReturnsWhereItWasOpenedFrom(t *testing.T) {
-	t.Run("from the queue", func(t *testing.T) {
-		m, _ := press(t, sized(), "S")
-		if m.mode != modeStats {
-			t.Fatalf("expected stats, got mode %v", m.mode)
-		}
-		m, _ = press(t, m, "esc")
-		if m.mode != modeDashboard {
-			t.Errorf("expected the dashboard, got mode %v", m.mode)
-		}
-	})
+// Stats is a section like any other: no key of its own, no mode of its own, and
+// it loads once on first visit rather than on every tab-in — the three empty
+// slices a quiet server returns are a real answer, not a missing one.
+func TestStats_IsAnOrdinarySection(t *testing.T) {
+	m := sized()
+	m.activeSection = sectionAlerts
 
-	t.Run("from an incident", func(t *testing.T) {
-		m, _ := press(t, onIncident(openIncidentFixture(), nil), "S")
-		if m.mode != modeStats {
-			t.Fatalf("expected stats, got mode %v", m.mode)
-		}
-		m, _ = press(t, m, "esc")
-		if m.mode != modeIncidentDetail {
-			t.Errorf("expected the incident, got mode %v", m.mode)
-		}
-	})
+	m, cmd := press(t, m, "tab")
+	if m.activeSection != sectionStats {
+		t.Fatalf("expected the stats section, got %v", m.activeSection)
+	}
+	if m.mode != modeDashboard {
+		t.Errorf("stats is a section, not a mode: got mode %v", m.mode)
+	}
+	if cmd == nil {
+		t.Error("the first visit should fetch")
+	}
+
+	m.statsLoaded = true
+	m.statsLoading = false
+	if cmd := m.loadSectionIfEmpty(); cmd != nil {
+		t.Error("a second visit should reuse what was already fetched")
+	}
+}
+
+// S used to open the stats overlay from anywhere. It is gone, and must not
+// disturb the view it is pressed in.
+func TestStats_KeyIsGone(t *testing.T) {
+	m, _ := press(t, sized(), "S")
+	if m.activeSection != sectionIncidents || m.mode != modeDashboard {
+		t.Errorf("S should do nothing on the queue, got section %v mode %v",
+			m.activeSection, m.mode)
+	}
+
+	m, _ = press(t, onIncident(openIncidentFixture(), nil), "S")
+	if m.mode != modeIncidentDetail {
+		t.Errorf("S should leave the incident open, got mode %v", m.mode)
+	}
+}
+
+// The overlay never auto-refreshed, because the tick skipped every non-dashboard
+// mode. As a section it rides the tick like the rest.
+func TestStats_RefreshesOnTick(t *testing.T) {
+	m := sized()
+	m.activeSection = sectionStats
+	if m.refreshActiveSection() == nil {
+		t.Error("the stats section should refresh on the tick")
+	}
 }
 
 // Alerts carry no workflow state, so the detail view offers nothing but a way

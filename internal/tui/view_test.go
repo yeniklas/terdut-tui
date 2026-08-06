@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/yeniklas/terdut-tui/internal/api"
 )
 
@@ -239,7 +240,7 @@ func TestView_TabsAndDashboardRender(t *testing.T) {
 	m.rebuildIncidentTable()
 
 	mustContain(t, m.View(),
-		"Incidents", "Alerts", "Archived", "Schedule", "Users",
+		"Incidents", "Alerts", "Stats", "Archived", "Schedule", "Users",
 		"Triggered: 1", "filter: open",
 		"DiskFull", "critical", "admin",
 		"enter·detail")
@@ -252,6 +253,27 @@ func TestView_EmptyStates(t *testing.T) {
 
 	m.activeSection = sectionArchived
 	mustContain(t, m.View(), "No archived incidents.")
+}
+
+// The stats page renders inside the normal section chrome now, so it has to
+// survive the real path: a window size message sizes the viewport and fills it.
+func TestView_StatsSectionRendersInPlace(t *testing.T) {
+	m := NewModel(nil, "http://test", time.Minute)
+	m.connected = true
+	m.incidentStats = &api.IncidentStats{Total: 3, Triggered: 1}
+	m.topAlerts = []api.TopAlert{{Name: "DiskFull", Count: 4}}
+	m.statsLoaded = true
+
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(Model)
+	m.activeSection = sectionStats
+
+	out := m.View()
+	mustContain(t, out, "Stats", "Incident Response", "Top Alerts", "DiskFull",
+		"tab·section")
+	if strings.Contains(plain(out), "Loading statistics") {
+		t.Error("loaded stats should not show the loading placeholder")
+	}
 }
 
 func TestView_ConnectionError(t *testing.T) {

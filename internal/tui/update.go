@@ -24,7 +24,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detailViewport.Width = m.width
 		m.detailViewport.Height = m.detailViewportHeight()
 		m.statsViewport.Width = m.width
-		m.statsViewport.Height = m.height - 5
+		m.statsViewport.Height = m.statsViewportHeight()
 		m.refreshDetailContent()
 		m.refreshStatsContent()
 		return m, nil
@@ -118,13 +118,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.hourStats = msg.byHour
 		m.dayStats = msg.byDay
 		m.statsLoading = false
+		m.statsLoaded = true
 		m.refreshStatsContent()
 		return m, nil
 
 	case detailStatsErrMsg:
 		m.statsLoading = false
+		// Mark it loaded even on failure, so tabbing back in does not re-fire the
+		// request every time. The tick and r still retry.
+		m.statsLoaded = true
 		m.statusMsg = "stats error: " + msg.err.Error()
-		m.mode = modeDashboard
 		return m, clearStatusCmd()
 
 	// ── Schedule messages ─────────────────────────────────────────────────
@@ -205,6 +208,9 @@ func (m Model) refreshActiveSection() tea.Cmd {
 		return tea.Batch(fetchIncidentsCmd(m.client, m.incidentFilter), fetchStatsCmd(m.client))
 	case sectionAlerts:
 		return tea.Batch(fetchAlertsCmd(m.client, m.alertFilter), fetchStatsCmd(m.client))
+	case sectionStats:
+		// Both: fetchStatsCmd feeds the Incident Response block, the other the charts.
+		return tea.Batch(fetchStatsCmd(m.client), fetchDetailStatsCmd(m.client))
 	case sectionArchived:
 		return fetchArchivedIncidentsCmd(m.client)
 	case sectionSchedule:
@@ -239,12 +245,6 @@ func (m Model) routeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.snoozeInput, inputCmd = m.snoozeInput.Update(msg)
 		m2, ourCmd := m.handleKey(msg)
 		return m2, tea.Batch(inputCmd, ourCmd)
-
-	case modeStats:
-		var vpCmd tea.Cmd
-		m.statsViewport, vpCmd = m.statsViewport.Update(msg)
-		m2, ourCmd := m.handleKey(msg)
-		return m2, tea.Batch(vpCmd, ourCmd)
 
 	case modeUserPicker:
 		var tableCmd tea.Cmd
@@ -286,6 +286,11 @@ func (m Model) routeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 				m.alertTable, tableCmd = m.alertTable.Update(msg)
 				m2, ourCmd := m.handleKey(msg)
 				return m2, tea.Batch(tableCmd, ourCmd)
+			case sectionStats:
+				var vpCmd tea.Cmd
+				m.statsViewport, vpCmd = m.statsViewport.Update(msg)
+				m2, ourCmd := m.handleKey(msg)
+				return m2, tea.Batch(vpCmd, ourCmd)
 			case sectionArchived:
 				var tableCmd tea.Cmd
 				m.archivedTable, tableCmd = m.archivedTable.Update(msg)
@@ -319,8 +324,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.handleSnoozeKey(msg)
 	case modeConfirm:
 		return m.handleConfirmKey(msg)
-	case modeStats:
-		return m.handleStatsKey(msg)
 	case modeUserPicker:
 		return m.handleUserPickerKey(msg)
 	case modeUserCreate:
@@ -482,12 +485,6 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "S":
-		if !m.connected {
-			return m, nil
-		}
-		return m.openStats()
-
 	case "n":
 		if m.activeSection != sectionUsers || !m.connected {
 			return m, nil
@@ -523,6 +520,11 @@ func (m *Model) loadSectionIfEmpty() tea.Cmd {
 		if len(m.alerts) == 0 {
 			m.loading = true
 			return fetchAlertsCmd(m.client, m.alertFilter)
+		}
+	case sectionStats:
+		if !m.statsLoaded {
+			m.statsLoading = true
+			return tea.Batch(fetchStatsCmd(m.client), fetchDetailStatsCmd(m.client))
 		}
 	case sectionArchived:
 		if len(m.archivedIncidents) == 0 {
@@ -677,9 +679,6 @@ func (m Model) handleIncidentDetailKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.mode = modeConfirm
 		return m, nil
 
-	case "S":
-		return m.openStats()
-
 	case "[":
 		return m.moveNoteCursor(-1), nil
 
@@ -733,9 +732,6 @@ func (m Model) handleAlertDetailKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			return m, clearStatusCmd()
 		}
 		return m.openIncident(api.Incident{ID: *m.selectedAlert.IncidentID})
-
-	case "S":
-		return m.openStats()
 	}
 
 	return m, nil
@@ -833,25 +829,6 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	}
 
 	return m, nil
-}
-
-// ── Stats ─────────────────────────────────────────────────────────────────
-
-func (m Model) handleStatsKey(msg tea.KeyMsg) (Model, tea.Cmd) {
-	if msg.String() == "esc" {
-		m.mode = m.statsReturnMode
-		return m, nil
-	}
-	return m, nil
-}
-
-// openStats enters the statistics view, remembering where to go back to.
-func (m Model) openStats() (Model, tea.Cmd) {
-	m.statsReturnMode = m.mode
-	m.mode = modeStats
-	m.statsLoading = true
-	m.statsViewport = viewport.New(m.width, m.height-5)
-	return m, fetchDetailStatsCmd(m.client)
 }
 
 // ── User picker ───────────────────────────────────────────────────────────

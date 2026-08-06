@@ -73,6 +73,7 @@ go build -ldflags="-X main.version=v0.1.0" -o terdut-tui .
 ## Sections
 
 `Incidents` (the queue, and the default) · `Alerts` (raw read-only feed) ·
+`Stats` (MTTA/MTTR and alert frequency charts) ·
 `Archived` (archived incidents) · `Schedule` · `Users`
 
 ## Development stages

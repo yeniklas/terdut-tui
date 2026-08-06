@@ -10,7 +10,8 @@ import (
 	"github.com/yeniklas/terdut-tui/internal/api"
 )
 
-var sectionNames = []string{"Incidents", "Alerts", "Archived", "Schedule", "Users"}
+// Order must match the section constants — renderTabs indexes this by ordinal.
+var sectionNames = []string{"Incidents", "Alerts", "Stats", "Archived", "Schedule", "Users"}
 
 func (m Model) View() string {
 	if m.width == 0 {
@@ -68,8 +69,6 @@ func (m Model) renderBody() string {
 		default:
 			return m.renderSchedule()
 		}
-	case modeStats:
-		return m.renderStats()
 	case modeUserPicker:
 		return m.renderUserPicker()
 	case modeUserCreate:
@@ -99,12 +98,12 @@ func (m Model) renderFooter() string {
 	switch m.mode {
 	case modeIncidentDetail:
 		if !m.selectedIncident.IsOpen() {
-			return withStatus("  x·archive  c·note  [/]·select  d·del  S·stats  esc·back")
+			return withStatus("  x·archive  c·note  [/]·select  d·del  esc·back")
 		}
-		return withStatus("  a·ack  A·unack  R·resolve  s·assign  z·snooze  Z·unsnooze  c·note  [/]·select  d·del  S·stats  esc·back")
+		return withStatus("  a·ack  A·unack  R·resolve  s·assign  z·snooze  Z·unsnooze  c·note  [/]·select  d·del  esc·back")
 
 	case modeAlertDetail:
-		return withStatus("  i·open incident  S·stats  esc·back")
+		return withStatus("  i·open incident  esc·back")
 
 	case modeNote:
 		return "\n" + styleFooter.Render("  enter·submit  esc·cancel")
@@ -114,9 +113,6 @@ func (m Model) renderFooter() string {
 
 	case modeConfirm:
 		return "\n" + styleError.Render("  "+m.confirmPrompt())
-
-	case modeStats:
-		return withStatus("  esc·back")
 
 	case modeUserPicker:
 		if m.pickerTarget == pickerIncidentAssignee {
@@ -146,9 +142,11 @@ func (m Model) renderFooter() string {
 	default:
 		switch m.activeSection {
 		case sectionIncidents:
-			return withStatus("  enter·detail  x·archive  f·filter  S·stats  r·refresh  tab·section  q·quit")
+			return withStatus("  enter·detail  x·archive  f·filter  r·refresh  tab·section  q·quit")
 		case sectionAlerts:
-			return withStatus("  enter·detail  f·filter  S·stats  r·refresh  tab·section  q·quit")
+			return withStatus("  enter·detail  f·filter  r·refresh  tab·section  q·quit")
+		case sectionStats:
+			return withStatus("  ↑/↓·scroll  r·refresh  tab·section  q·quit")
 		case sectionArchived:
 			return withStatus("  enter·detail  x·unarchive  r·refresh  tab·section  q·quit")
 		case sectionSchedule:
@@ -187,6 +185,8 @@ func (m Model) renderDashboard() string {
 		return m.renderIncidents()
 	case sectionAlerts:
 		return m.renderAlerts()
+	case sectionStats:
+		return m.renderStats()
 	case sectionArchived:
 		return m.renderArchived()
 	case sectionSchedule:
@@ -359,7 +359,9 @@ func (m Model) renderPrompt(prompt string) string {
 // ── Stats ──────────────────────────────────────────────────────────────────
 
 func (m Model) renderStats() string {
-	if m.statsLoading {
+	// Only announce loading before the first result: a background refresh must not
+	// blank the page out from under whoever is reading it.
+	if m.statsLoading && !m.statsLoaded {
 		return "\n" + styleMuted.Render("  Loading statistics…")
 	}
 	return m.statsViewport.View()

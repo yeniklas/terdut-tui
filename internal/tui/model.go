@@ -21,11 +21,12 @@ const (
 	// Incidents lead: they are the work. Alerts is the raw feed underneath.
 	sectionIncidents section = iota
 	sectionAlerts
+	sectionStats
 	sectionArchived
 	sectionSchedule
 	sectionUsers
 
-	sectionCount = 5
+	sectionCount = 6
 )
 
 type mode int
@@ -37,7 +38,6 @@ const (
 	modeNote
 	modeSnooze
 	modeConfirm
-	modeStats
 	modeUserPicker
 	modeUserCreate
 	modeAPIKeyMenu
@@ -195,14 +195,14 @@ type Model struct {
 	pendingDeleteEntry *api.ScheduleEntry
 
 	// Stats
-	topAlerts     []api.TopAlert
-	hourStats     []api.HourStat
-	dayStats      []api.DayStat
+	topAlerts []api.TopAlert
+	hourStats []api.HourStat
+	dayStats  []api.DayStat
+	// statsLoaded tracks the first fetch separately from emptiness: a server with
+	// no alerts yet legitimately returns three empty slices.
+	statsLoaded   bool
 	statsLoading  bool
 	statsViewport viewport.Model
-	// statsReturnMode is where esc goes back to, since stats opens from both
-	// the dashboard and an incident.
-	statsReturnMode mode
 
 	// Schedule
 	scheduleWindow  time.Time
@@ -253,6 +253,10 @@ func NewModel(client *api.Client, serverURL string, refreshInterval time.Duratio
 	manageT := table.New(table.WithFocused(true))
 	manageT.SetStyles(ts)
 
+	// Sized by the first tea.WindowSizeMsg; built here so it carries the default
+	// scroll keymap, which the zero value lacks.
+	statsVP := viewport.New(0, 0)
+
 	noteIn := textinput.New()
 	noteIn.Placeholder = "type your note…"
 	noteIn.CharLimit = 1000
@@ -298,6 +302,7 @@ func NewModel(client *api.Client, serverURL string, refreshInterval time.Duratio
 		incidentTable:     incidentT,
 		alertTable:        alertT,
 		archivedTable:     archivedT,
+		statsViewport:     statsVP,
 		noteInput:         noteIn,
 		snoozeInput:       snoozeIn,
 		scheduleWindow:    window,
@@ -395,6 +400,14 @@ func (m *Model) refreshDetailContent() {
 func (m *Model) refreshStatsContent() {
 	m.statsViewport.SetContent(
 		buildStatsContent(m.incidentStats, m.topAlerts, m.hourStats, m.dayStats, m.width))
+}
+
+func (m Model) statsViewportHeight() int {
+	h := m.height - 5
+	if h < 1 {
+		h = 1
+	}
+	return h
 }
 
 func (m Model) detailViewportHeight() int {
