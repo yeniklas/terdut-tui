@@ -139,6 +139,13 @@ Schedule section:
 | `d` | Remove the assignment |
 | `←` / `→` | Shift the week window |
 
+One person holds a given day. Assigning over days somebody else already has
+asks first — naming them and how many days are being taken — and moves the whole
+selection at once when you accept, so reassigning a week is one confirmation
+rather than seven deletions. Taking somebody's shift needs terdut-server
+**v0.8.0 or later**; against an older server the assignment is refused with
+`date already assigned`.
+
 Users section:
 
 | Key | Action |

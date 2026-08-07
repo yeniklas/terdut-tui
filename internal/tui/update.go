@@ -822,6 +822,7 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		m.pendingDeleteID = 0
 		m.pendingDeleteEntry = nil
+		m.pendingAssign = nil
 		return m, nil
 	}
 
@@ -851,6 +852,17 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.mode = modeDashboard
 		m.usersLoading = true
 		return m, deleteUserCmd(m.client, userID)
+
+	case confirmReassignSchedule:
+		p := m.pendingAssign
+		m.mode = modeDashboard
+		m.pendingAssign = nil
+		if p == nil {
+			return m, nil
+		}
+		m.scheduleLoading = true
+		return m, assignScheduleCmd(m.client, p.userID, p.dates, true,
+			m.scheduleWindow, m.scheduleWindow.AddDate(0, 0, 6))
 	}
 
 	return m, nil
@@ -899,13 +911,82 @@ func (m Model) handleUserPickerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		} else {
 			dates = []string{d.Format("2006-01-02")}
 		}
+
+		// The server refuses a date somebody else holds, so ask before taking
+		// it rather than letting the request come back 409. The answer is
+		// already on screen — no round trip is needed to work out who loses
+		// their shift.
+		taken, holders := m.scheduleConflicts(dates, user.ID)
+		if len(taken) > 0 {
+			m.pendingAssign = &pendingAssign{
+				userID:   user.ID,
+				username: user.Username,
+				dates:    dates,
+				taken:    taken,
+				holders:  holders,
+			}
+			m.confirmTarget = confirmReassignSchedule
+			m.mode = modeConfirm
+			return m, nil
+		}
+
 		m.mode = modeDashboard
 		m.scheduleLoading = true
-		return m, assignScheduleCmd(m.client, user.ID, dates,
+		// Nobody else loses anything, but the server rejects any date that
+		// already exists — including days this same person already holds, which
+		// is a no-op worth letting through silently.
+		return m, assignScheduleCmd(m.client, user.ID, dates, m.scheduleOccupied(dates),
 			m.scheduleWindow, m.scheduleWindow.AddDate(0, 0, 6))
 	}
 
 	return m, nil
+}
+
+// scheduleConflicts reports which of dates are already held by somebody other
+// than newUserID, and the distinct names holding them.
+//
+// Days the target already owns are not conflicts — reassigning somebody to
+// their own shift takes nothing from anyone, and prompting for it would be
+// noise. The server still needs replace for those, since it rejects any date
+// that exists.
+func (m Model) scheduleConflicts(dates []string, newUserID int64) (taken, holders []string) {
+	held := make(map[string]api.ScheduleEntry, len(m.scheduleDays))
+	for _, d := range m.scheduleDays {
+		if d.entry != nil {
+			held[d.entry.Date] = *d.entry
+		}
+	}
+	seen := make(map[string]bool)
+	for _, date := range dates {
+		e, ok := held[date]
+		if !ok || e.UserID == newUserID {
+			continue
+		}
+		taken = append(taken, date)
+		if !seen[e.Username] {
+			seen[e.Username] = true
+			holders = append(holders, e.Username)
+		}
+	}
+	return taken, holders
+}
+
+// scheduleOccupied reports whether any of dates already has an entry at all,
+// including one belonging to the incoming user. That is what decides whether
+// the request needs replace, as opposed to whether it needs confirming.
+func (m Model) scheduleOccupied(dates []string) bool {
+	held := make(map[string]bool, len(m.scheduleDays))
+	for _, d := range m.scheduleDays {
+		if d.entry != nil {
+			held[d.entry.Date] = true
+		}
+	}
+	for _, date := range dates {
+		if held[date] {
+			return true
+		}
+	}
+	return false
 }
 
 // ── User management ───────────────────────────────────────────────────────────

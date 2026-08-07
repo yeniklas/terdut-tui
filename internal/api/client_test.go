@@ -166,6 +166,28 @@ func TestClient_RequestBodies(t *testing.T) {
 		}
 	})
 
+	// replace is what takes a day off its current holder, so it has to reach the
+	// wire when asked for — and stay off it when not.
+	t.Run("assign schedule", func(t *testing.T) {
+		c, got := stub(t, http.StatusCreated, `[]`)
+		if _, err := c.AssignSchedule(3, []string{"2026-07-27"}, false); err != nil {
+			t.Fatalf("assign: %v", err)
+		}
+		if got.body != `{"user_id":3,"dates":["2026-07-27"]}` {
+			t.Errorf("unexpected body %q", got.body)
+		}
+	})
+
+	t.Run("assign schedule with replace", func(t *testing.T) {
+		c, got := stub(t, http.StatusCreated, `[]`)
+		if _, err := c.AssignSchedule(3, []string{"2026-07-27"}, true); err != nil {
+			t.Fatalf("assign: %v", err)
+		}
+		if got.body != `{"user_id":3,"dates":["2026-07-27"],"replace":true}` {
+			t.Errorf("unexpected body %q", got.body)
+		}
+	})
+
 	t.Run("set notify target", func(t *testing.T) {
 		c, got := stub(t, http.StatusOK, `{}`)
 		if _, err := c.SetUserNotifyTarget(3, "terdut-niklas"); err != nil {

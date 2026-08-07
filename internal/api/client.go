@@ -358,11 +358,17 @@ func (c *Client) GetCurrentOnCall() (*ScheduleEntry, error) {
 	return &entry, nil
 }
 
-func (c *Client) AssignSchedule(userID int64, dates []string) ([]ScheduleEntry, error) {
+// AssignSchedule puts one user on call for the given dates.
+//
+// The server holds one person per day and refuses a date somebody already has,
+// so replace is what takes a shift off its current holder. It is all-or-nothing
+// either way: a week of free and taken days moves as a unit, or not at all.
+func (c *Client) AssignSchedule(userID int64, dates []string, replace bool) ([]ScheduleEntry, error) {
 	body := struct {
-		UserID int64    `json:"user_id"`
-		Dates  []string `json:"dates"`
-	}{UserID: userID, Dates: dates}
+		UserID  int64    `json:"user_id"`
+		Dates   []string `json:"dates"`
+		Replace bool     `json:"replace,omitempty"`
+	}{UserID: userID, Dates: dates, Replace: replace}
 	req, err := c.newRequestWithBody(http.MethodPost, "/api/schedule", body)
 	if err != nil {
 		return nil, err

@@ -277,3 +277,95 @@ func TestBuildScheduleDays(t *testing.T) {
 		t.Error("expected unassigned days to have no entry")
 	}
 }
+
+// ── Schedule reassignment ─────────────────────────────────────────────────
+
+// scheduledWeek builds a model showing the week of 2026-07-27 with the given
+// entries already on the rota.
+func scheduledWeek(entries []api.ScheduleEntry) Model {
+	m := NewModel(nil, "http://test", time.Minute)
+	m.width, m.height = 120, 40
+	m.connected = true
+	m.activeSection = sectionSchedule
+	m.scheduleWindow = time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC)
+	m.scheduleEntries = entries
+	m.scheduleDays = buildScheduleDays(m.scheduleWindow, entries)
+	m.rebuildScheduleTable()
+	return m
+}
+
+func TestScheduleConflicts(t *testing.T) {
+	m := scheduledWeek([]api.ScheduleEntry{
+		{ID: 1, Date: "2026-07-27", UserID: 1, Username: "niklas"},
+		{ID: 2, Date: "2026-07-28", UserID: 3, Username: "sam"},
+		{ID: 3, Date: "2026-07-29", UserID: 2, Username: "alex"},
+	})
+	week := []string{"2026-07-27", "2026-07-28", "2026-07-29", "2026-07-30"}
+
+	// Assigning alex: the days niklas and sam hold are conflicts, the day alex
+	// already holds is not, and the free day is not.
+	taken, holders := m.scheduleConflicts(week, 2)
+	if len(taken) != 2 || taken[0] != "2026-07-27" || taken[1] != "2026-07-28" {
+		t.Errorf("expected the two other people's days, got %v", taken)
+	}
+	if len(holders) != 2 || holders[0] != "niklas" || holders[1] != "sam" {
+		t.Errorf("expected both holders named once, got %v", holders)
+	}
+}
+
+// Reassigning somebody to a day they already hold takes nothing from anyone, so
+// it must not raise a prompt — but it still needs replace, because the server
+// rejects any date that already exists.
+func TestScheduleConflicts_OwnDayIsNotAConflict(t *testing.T) {
+	m := scheduledWeek([]api.ScheduleEntry{
+		{ID: 1, Date: "2026-07-27", UserID: 2, Username: "alex"},
+	})
+	dates := []string{"2026-07-27"}
+
+	if taken, _ := m.scheduleConflicts(dates, 2); len(taken) != 0 {
+		t.Errorf("expected no conflict on the user's own day, got %v", taken)
+	}
+	if !m.scheduleOccupied(dates) {
+		t.Error("expected the day to still count as occupied, so replace is sent")
+	}
+}
+
+func TestScheduleOccupied_FreeDays(t *testing.T) {
+	m := scheduledWeek(nil)
+	if m.scheduleOccupied([]string{"2026-07-27", "2026-07-28"}) {
+		t.Error("expected an empty rota to need no replace")
+	}
+}
+
+func TestDayCount(t *testing.T) {
+	tests := []struct {
+		taken, total int
+		want         string
+	}{
+		{1, 1, "This day is"},
+		{7, 7, "All 7 days are"},
+		{3, 7, "3 of 7 days are"},
+	}
+	for _, tt := range tests {
+		if got := dayCount(tt.taken, tt.total); got != tt.want {
+			t.Errorf("dayCount(%d, %d) = %q, want %q", tt.taken, tt.total, got, tt.want)
+		}
+	}
+}
+
+func TestJoinNames(t *testing.T) {
+	tests := []struct {
+		names []string
+		want  string
+	}{
+		{nil, "somebody else"},
+		{[]string{"niklas"}, "niklas"},
+		{[]string{"niklas", "alex"}, "niklas and alex"},
+		{[]string{"niklas", "alex", "sam"}, "niklas, alex and sam"},
+	}
+	for _, tt := range tests {
+		if got := joinNames(tt.names); got != tt.want {
+			t.Errorf("joinNames(%v) = %q, want %q", tt.names, got, tt.want)
+		}
+	}
+}

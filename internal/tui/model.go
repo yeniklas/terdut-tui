@@ -54,6 +54,7 @@ const (
 	confirmResolveIncident
 	confirmDeleteScheduleEntry
 	confirmDeleteUser
+	confirmReassignSchedule
 )
 
 // pickerTarget says what the user picker is choosing a person for.
@@ -143,6 +144,18 @@ type scheduleDay struct {
 	entry *api.ScheduleEntry
 }
 
+// pendingAssign is an on-call assignment held back by the reassignment
+// confirmation, because some of its dates belong to somebody else.
+type pendingAssign struct {
+	userID   int64
+	username string
+	dates    []string
+	// taken are the dates currently held by other people, and holders the
+	// distinct names holding them — both only for wording the prompt.
+	taken   []string
+	holders []string
+}
+
 type Model struct {
 	client          *api.Client
 	serverURL       string
@@ -194,6 +207,7 @@ type Model struct {
 	confirmTarget      confirmTarget
 	pendingDeleteID    int64 // note event ID
 	pendingDeleteEntry *api.ScheduleEntry
+	pendingAssign      *pendingAssign
 
 	// Stats
 	topAlerts []api.TopAlert
@@ -866,9 +880,9 @@ func fetchScheduleCmd(client *api.Client, from, to time.Time) tea.Cmd {
 	}
 }
 
-func assignScheduleCmd(client *api.Client, userID int64, dates []string, from, to time.Time) tea.Cmd {
+func assignScheduleCmd(client *api.Client, userID int64, dates []string, replace bool, from, to time.Time) tea.Cmd {
 	return func() tea.Msg {
-		if _, err := client.AssignSchedule(userID, dates); err != nil {
+		if _, err := client.AssignSchedule(userID, dates, replace); err != nil {
 			return scheduleActionErrMsg{err}
 		}
 		entries, err := client.GetSchedule(from.Format("2006-01-02"), to.Format("2006-01-02"))

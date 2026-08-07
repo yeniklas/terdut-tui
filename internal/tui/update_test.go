@@ -309,6 +309,109 @@ func TestDeleteNote_ConfirmsThenActs(t *testing.T) {
 	}
 }
 
+// ── Schedule reassignment ─────────────────────────────────────────────────
+
+// pickingOnCall opens the user picker for the schedule day at dayIndex, which
+// is where a reassignment actually starts.
+func pickingOnCall(entries []api.ScheduleEntry, dayIndex int, week bool) Model {
+	m := scheduledWeek(entries)
+	m.users = []api.User{
+		{ID: 1, Username: "niklas", Email: "n@example.com"},
+		{ID: 2, Username: "alex", Email: "a@example.com"},
+	}
+	m.rebuildUserPickerTable()
+	m.scheduleTable.SetCursor(dayIndex)
+	m.pickerAssignWeek = week
+	m.pickerTarget = pickerSchedule
+	m.mode = modeUserPicker
+	m.userPickerTable.SetCursor(1) // alex
+	return m
+}
+
+// The bug: a day somebody already holds could not be handed to anybody else.
+// The server refuses it, so the TUI has to ask first and then say so.
+func TestSchedule_ReassigningATakenDayAsksFirst(t *testing.T) {
+	m := pickingOnCall([]api.ScheduleEntry{
+		{ID: 1, Date: "2026-07-27", UserID: 1, Username: "niklas"},
+	}, 0, false)
+
+	m, cmd := press(t, m, "enter")
+
+	if m.mode != modeConfirm || m.confirmTarget != confirmReassignSchedule {
+		t.Fatalf("expected a reassignment confirmation, got mode %v target %v",
+			m.mode, m.confirmTarget)
+	}
+	if cmd != nil {
+		t.Error("expected nothing sent to the server before confirming")
+	}
+	mustContain(t, m.confirmPrompt(), "This day is assigned to niklas", "Reassign to alex?")
+}
+
+func TestSchedule_ReassignConfirmedSends(t *testing.T) {
+	m := pickingOnCall([]api.ScheduleEntry{
+		{ID: 1, Date: "2026-07-27", UserID: 1, Username: "niklas"},
+	}, 0, false)
+	m, _ = press(t, m, "enter")
+
+	m, cmd := press(t, m, "y")
+	if cmd == nil {
+		t.Fatal("expected the confirmed reassignment to be sent")
+	}
+	if m.mode != modeDashboard {
+		t.Errorf("expected a return to the dashboard, got mode %v", m.mode)
+	}
+	if m.pendingAssign != nil {
+		t.Error("expected the pending assignment cleared")
+	}
+}
+
+// Declining must leave the rota alone — that is the whole point of the guard.
+func TestSchedule_ReassignDeclinedSendsNothing(t *testing.T) {
+	m := pickingOnCall([]api.ScheduleEntry{
+		{ID: 1, Date: "2026-07-27", UserID: 1, Username: "niklas"},
+	}, 0, false)
+	m, _ = press(t, m, "enter")
+
+	m, cmd := press(t, m, "n")
+	if cmd != nil {
+		t.Error("expected nothing sent when the reassignment is declined")
+	}
+	if m.pendingAssign != nil {
+		t.Error("expected the pending assignment discarded")
+	}
+}
+
+// A free day is the path that always worked, and must not grow a prompt.
+func TestSchedule_AssigningAFreeDayDoesNotAsk(t *testing.T) {
+	m := pickingOnCall(nil, 0, false)
+
+	m, cmd := press(t, m, "enter")
+	if m.mode != modeDashboard {
+		t.Errorf("expected no prompt for a free day, got mode %v", m.mode)
+	}
+	if cmd == nil {
+		t.Error("expected the assignment to be sent straight away")
+	}
+}
+
+// The week case is the one that was worst: a single taken day rejected all
+// seven. One prompt now covers the lot, and it says how much is being taken.
+func TestSchedule_ReassigningAPartlyTakenWeekAsksOnce(t *testing.T) {
+	m := pickingOnCall([]api.ScheduleEntry{
+		{ID: 1, Date: "2026-07-28", UserID: 1, Username: "niklas"},
+		{ID: 2, Date: "2026-07-30", UserID: 3, Username: "sam"},
+	}, 0, true)
+
+	m, _ = press(t, m, "enter")
+	if m.confirmTarget != confirmReassignSchedule {
+		t.Fatalf("expected one confirmation for the week, got target %v", m.confirmTarget)
+	}
+	if got := len(m.pendingAssign.dates); got != 7 {
+		t.Errorf("expected all 7 days in the assignment, got %d", got)
+	}
+	mustContain(t, m.confirmPrompt(), "2 of 7 days are assigned to niklas and sam")
+}
+
 // ── Ntfy topic ────────────────────────────────────────────────────────────
 
 // onUsers puts the model in the Users section with a loaded table.

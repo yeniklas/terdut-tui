@@ -178,8 +178,42 @@ func (m Model) confirmPrompt() string {
 		return "Delete schedule entry? [y/N]"
 	case confirmDeleteUser:
 		return fmt.Sprintf("Delete user %s (cascades all API keys)? [y/N]", m.selectedUser.Username)
+	case confirmReassignSchedule:
+		if p := m.pendingAssign; p != nil {
+			return fmt.Sprintf("%s assigned to %s. Reassign to %s? [y/N]",
+				dayCount(len(p.taken), len(p.dates)), joinNames(p.holders), p.username)
+		}
+		return "Reassign these days? [y/N]"
 	}
 	return "Are you sure? [y/N]"
+}
+
+// dayCount phrases how much of an assignment is being taken from somebody. A
+// single day says so plainly; a partial week says which part, because "3 of 7"
+// is the difference between taking a shift and taking somebody's whole week.
+func dayCount(taken, total int) string {
+	switch {
+	case total == 1:
+		return "This day is"
+	case taken == total:
+		return fmt.Sprintf("All %d days are", total)
+	default:
+		return fmt.Sprintf("%d of %d days are", taken, total)
+	}
+}
+
+// joinNames renders a list of people as prose.
+func joinNames(names []string) string {
+	switch len(names) {
+	case 0:
+		return "somebody else"
+	case 1:
+		return names[0]
+	case 2:
+		return names[0] + " and " + names[1]
+	default:
+		return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
+	}
 }
 
 // ── Dashboard ──────────────────────────────────────────────────────────────
