@@ -309,6 +309,89 @@ func TestDeleteNote_ConfirmsThenActs(t *testing.T) {
 	}
 }
 
+// ── Ntfy topic ────────────────────────────────────────────────────────────
+
+// onUsers puts the model in the Users section with a loaded table.
+func onUsers(users []api.User) Model {
+	m := sized()
+	m.activeSection = sectionUsers
+	m.users = users
+	m.rebuildUserManageTable()
+	return m
+}
+
+func userFixtures() []api.User {
+	topic := "terdut-niklas"
+	return []api.User{
+		{ID: 1, Username: "niklas", Email: "niklas@example.com", NtfyTopic: &topic},
+		{ID: 2, Username: "alex", Email: "alex@example.com"},
+	}
+}
+
+func TestNotifyTopic_EditPrefillsTheCurrentTopic(t *testing.T) {
+	m, _ := press(t, onUsers(userFixtures()), "t")
+
+	if m.mode != modeUserNotifyEdit {
+		t.Fatalf("expected the topic editor, got mode %v", m.mode)
+	}
+	if m.selectedUser.ID != 1 {
+		t.Errorf("expected the user under the cursor, got %d", m.selectedUser.ID)
+	}
+	// Prefilled, so editing a topic does not mean retyping it from scratch.
+	if got := m.ntfyTopicInput.Value(); got != "terdut-niklas" {
+		t.Errorf("expected the current topic prefilled, got %q", got)
+	}
+}
+
+// A user with no topic opens an empty field rather than the previous user's.
+func TestNotifyTopic_EditStartsEmptyWhenUnset(t *testing.T) {
+	m := onUsers(userFixtures())
+	m, _ = press(t, m, "t")
+	m, _ = press(t, m, "esc")
+	m.userManageTable.SetCursor(1)
+
+	m, _ = press(t, m, "t")
+	if got := m.ntfyTopicInput.Value(); got != "" {
+		t.Errorf("expected an empty field for a user with no topic, got %q", got)
+	}
+}
+
+func TestNotifyTopic_EscapeAbandonsWithoutSaving(t *testing.T) {
+	m, _ := press(t, onUsers(userFixtures()), "t")
+	m, cmd := press(t, m, "esc")
+
+	if cmd != nil {
+		t.Error("expected escape to save nothing")
+	}
+	if m.mode != modeDashboard {
+		t.Errorf("expected a return to the dashboard, got mode %v", m.mode)
+	}
+}
+
+// Clearing a topic is a real action, not a no-op: it is how a user is taken off
+// their own topic and back onto the shared fallback. Contrast the snooze prompt,
+// where an empty value means "I changed my mind".
+func TestNotifyTopic_EmptyInputStillSubmits(t *testing.T) {
+	m, _ := press(t, onUsers(userFixtures()), "t")
+	m.ntfyTopicInput.SetValue("")
+
+	m, cmd := press(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("expected clearing the topic to call the server")
+	}
+	if m.mode != modeDashboard {
+		t.Errorf("expected a return to the dashboard, got mode %v", m.mode)
+	}
+}
+
+func TestNotifyTopic_IsUsersSectionOnly(t *testing.T) {
+	m := sized()
+	m.activeSection = sectionIncidents
+	if next, cmd := press(t, m, "t"); cmd != nil || next.mode != modeDashboard {
+		t.Error("expected t to do nothing outside the Users section")
+	}
+}
+
 func TestTab_CyclesEverySection(t *testing.T) {
 	m := sized()
 	if m.activeSection != sectionIncidents {

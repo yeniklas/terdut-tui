@@ -95,6 +95,13 @@ const (
 	EventUnsnoozed      = "unsnoozed"
 	EventResolved       = "resolved"
 	EventNote           = "note"
+
+	// Written by the server's notifier from the delivery result, not at enqueue.
+	// Detail carries the notification kind ("triggered", "reminder", "resolved"),
+	// and on a failure the reason after it. An absent user means the page went to
+	// the shared fallback topic rather than to a person.
+	EventNotified     = "notified"
+	EventNotifyFailed = "notify_failed"
 )
 
 // IncidentEvent is one entry in an incident's timeline. An empty Username means
@@ -158,6 +165,21 @@ type User struct {
 	Username  string    `json:"username"`
 	Email     string    `json:"email"`
 	CreatedAt time.Time `json:"created_at"`
+
+	// NtfyTopic is where this user's push notifications go. Nil and empty mean
+	// the same thing — no topic of their own — because the server stores a blank
+	// string as NULL. Their incidents fall back to the server's shared fallback
+	// topic, which carries no Acknowledge button.
+	NtfyTopic *string `json:"ntfy_topic,omitempty"`
+}
+
+// Topic reads the user's ntfy topic, flattening the nil and empty cases the
+// server treats alike.
+func (u User) Topic() string {
+	if u.NtfyTopic == nil {
+		return ""
+	}
+	return *u.NtfyTopic
 }
 
 type APIKey struct {

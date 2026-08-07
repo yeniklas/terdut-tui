@@ -401,6 +401,23 @@ func (c *Client) CreateUser(username, email string) (*User, error) {
 	return &user, c.do(req, &user)
 }
 
+// SetUserNotifyTarget points a user's push notifications at an ntfy topic.
+//
+// An empty topic clears it: the server stores NULL, and that user's incidents
+// page the shared fallback topic instead — which carries no Acknowledge button,
+// because anyone subscribed to it could otherwise acknowledge as somebody else.
+func (c *Client) SetUserNotifyTarget(userID int64, topic string) (*User, error) {
+	body := struct {
+		NtfyTopic string `json:"ntfy_topic"`
+	}{NtfyTopic: topic}
+	req, err := c.newRequestWithBody(http.MethodPut, fmt.Sprintf("/api/users/%d/notify", userID), body)
+	if err != nil {
+		return nil, err
+	}
+	var user User
+	return &user, c.do(req, &user)
+}
+
 func (c *Client) DeleteUser(id int64) error {
 	req, err := c.newRequest(http.MethodDelete, fmt.Sprintf("/api/users/%d", id))
 	if err != nil {

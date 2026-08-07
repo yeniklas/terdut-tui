@@ -258,6 +258,12 @@ func (m Model) routeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m2, ourCmd := m.handleKey(msg)
 		return m2, tea.Batch(inputCmd, ourCmd)
 
+	case modeUserNotifyEdit:
+		var inputCmd tea.Cmd
+		m.ntfyTopicInput, inputCmd = m.ntfyTopicInput.Update(msg)
+		m2, ourCmd := m.handleKey(msg)
+		return m2, tea.Batch(inputCmd, ourCmd)
+
 	case modeAPIKeyCreate:
 		var inputCmd tea.Cmd
 		m.apiKeyNameInput, inputCmd = m.apiKeyNameInput.Update(msg)
@@ -328,6 +334,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.handleUserPickerKey(msg)
 	case modeUserCreate:
 		return m.handleUserCreateKey(msg)
+	case modeUserNotifyEdit:
+		return m.handleUserNotifyEditKey(msg)
 	case modeAPIKeyMenu:
 		return m.handleAPIKeyMenuKey(msg)
 	case modeAPIKeyCreate:
@@ -495,6 +503,23 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.userFormInputs[0].Focus()
 		m.userFormInputs[1].Blur()
 		m.mode = modeUserCreate
+		return m, nil
+
+	case "t":
+		if m.activeSection != sectionUsers || !m.connected || len(m.users) == 0 {
+			return m, nil
+		}
+		cursor := m.userManageTable.Cursor()
+		if cursor >= len(m.users) {
+			return m, nil
+		}
+		m.selectedUser = m.users[cursor]
+		// Prefilled with what they have, so editing a topic does not mean
+		// retyping it, and clearing one is a deliberate wipe.
+		m.ntfyTopicInput.SetValue(m.selectedUser.Topic())
+		m.ntfyTopicInput.CursorEnd()
+		m.ntfyTopicInput.Focus()
+		m.mode = modeUserNotifyEdit
 		return m, nil
 
 	case "k":
@@ -911,6 +936,28 @@ func (m Model) handleUserCreateKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.mode = modeDashboard
 		m.usersLoading = true
 		return m, createUserCmd(m.client, username, email)
+	}
+
+	return m, nil
+}
+
+// handleUserNotifyEditKey edits one user's ntfy topic.
+//
+// Unlike the other forms here, an empty value is not a mistake to reject: it is
+// how a topic is cleared, which the server accepts and treats as NULL.
+func (m Model) handleUserNotifyEditKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.ntfyTopicInput.Blur()
+		m.mode = modeDashboard
+		return m, nil
+
+	case "enter":
+		topic := strings.TrimSpace(m.ntfyTopicInput.Value())
+		m.ntfyTopicInput.Blur()
+		m.mode = modeDashboard
+		m.usersLoading = true
+		return m, setUserNotifyTargetCmd(m.client, m.selectedUser.ID, topic)
 	}
 
 	return m, nil

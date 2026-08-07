@@ -172,6 +172,32 @@ func TestAlertRows_ShowIncidentLink(t *testing.T) {
 	}
 }
 
+// A user with no ntfy topic gets no pages of their own — the row has to say so
+// rather than leaving a blank that reads as "not loaded yet".
+func TestUserManageRows_ShowMissingTopic(t *testing.T) {
+	topic := "terdut-niklas"
+	empty := ""
+	m := NewModel(nil, "http://test", time.Minute)
+	m.width, m.height = 120, 40
+	m.users = []api.User{
+		{ID: 1, Username: "niklas", NtfyTopic: &topic},
+		{ID: 2, Username: "alex"},
+		// The server stores a blank topic as NULL, but a stale client or an older
+		// server can still hand one back; it means the same thing.
+		{ID: 3, Username: "sam", NtfyTopic: &empty},
+	}
+	m.rebuildUserManageTable()
+
+	rows := m.userManageTable.Rows()
+	if rows[0][2] != "terdut-niklas" {
+		t.Errorf("expected the topic in the row, got %q", rows[0][2])
+	}
+	if rows[1][2] != "—" || rows[2][2] != "—" {
+		t.Errorf("expected an em dash for nil and empty topics, got %q and %q",
+			rows[1][2], rows[2][2])
+	}
+}
+
 // A previous release overflowed the terminal by two columns because the padding
 // budget was wrong. Columns plus bubbles' per-cell padding must land exactly on
 // the window width.
@@ -191,6 +217,17 @@ func TestColumnWidthsFitTheTerminal(t *testing.T) {
 					name, width, sum, padding, sum+padding)
 			}
 		}
+
+		// The users table is four cells, so its padding budget differs.
+		sum := 0
+		for _, w := range widths(userManageColumns(width)) {
+			sum += w
+		}
+		const userPadding = 8
+		if sum+userPadding != width {
+			t.Errorf("user columns at width %d sum to %d+%d = %d",
+				width, sum, userPadding, sum+userPadding)
+		}
 	}
 }
 
@@ -198,7 +235,9 @@ func TestColumnWidthsFitTheTerminal(t *testing.T) {
 // what must not happen is a negative or zero column.
 func TestColumnWidthsStayPositiveWhenNarrow(t *testing.T) {
 	for _, width := range []int{20, 40, 60} {
-		for _, w := range append(widths(incidentColumns(width)), widths(alertColumns(width))...) {
+		cols := append(widths(incidentColumns(width)), widths(alertColumns(width))...)
+		cols = append(cols, widths(userManageColumns(width))...)
+		for _, w := range cols {
 			if w < 1 {
 				t.Errorf("width %d produced a non-positive column %d", width, w)
 			}

@@ -73,6 +73,8 @@ func (m Model) renderBody() string {
 		return m.renderUserPicker()
 	case modeUserCreate:
 		return m.renderUserCreate()
+	case modeUserNotifyEdit:
+		return m.renderUserNotifyEdit()
 	case modeAPIKeyMenu:
 		return m.renderAPIKeyMenu()
 	case modeAPIKeyCreate:
@@ -127,6 +129,9 @@ func (m Model) renderFooter() string {
 	case modeUserCreate:
 		return withStatus("  tab·next field  enter·create  esc·cancel")
 
+	case modeUserNotifyEdit:
+		return withStatus("  enter·save  esc·cancel   (empty clears the topic)")
+
 	case modeAPIKeyMenu:
 		return withStatus("  n·new key  r·revoke by ID  esc·back")
 
@@ -152,7 +157,7 @@ func (m Model) renderFooter() string {
 		case sectionSchedule:
 			return withStatus("  +·assign day  W·assign week  d·del  ←/→·shift week  tab·section  r·refresh  q·quit")
 		case sectionUsers:
-			return withStatus("  n·new user  d·delete  k·API keys  r·refresh  tab·section  q·quit")
+			return withStatus("  n·new user  t·topic  d·delete  k·API keys  r·refresh  tab·section  q·quit")
 		}
 		return "\n" + styleFooter.Render(m.help.ShortHelpView(m.keys.ShortHelp()))
 	}
@@ -550,6 +555,15 @@ func eventLabel(e api.IncidentEvent) string {
 			return "  Resolved by " + who
 		}
 		return "  Resolved (all alerts stopped firing)"
+	case api.EventNotified:
+		// An empty username here is not "the server acted": it means the page
+		// went to the shared fallback topic, so it belongs to nobody.
+		return fmt.Sprintf("  Notified %s%s", notifiedTarget(who), notifyKind(e.Detail))
+	case api.EventNotifyFailed:
+		// The detail is "<kind>: <reason>", and the reason is the point — it is
+		// the only thing that says why nobody's phone rang.
+		return truncate(fmt.Sprintf("  Notification to %s failed · %s",
+			notifiedTarget(who), e.Detail), 52)
 	default:
 		label := "  " + e.Type
 		if e.Detail != "" {
@@ -557,6 +571,25 @@ func eventLabel(e api.IncidentEvent) string {
 		}
 		return label
 	}
+}
+
+// notifiedTarget names who a page reached. The server attaches no user when it
+// published to the shared fallback topic, and saying so is the difference
+// between "somebody was paged" and "the on-call rota was empty".
+func notifiedTarget(username string) string {
+	if username == "" {
+		return "the fallback topic"
+	}
+	return username
+}
+
+// notifyKind renders the notification kind the server puts in Detail. It is an
+// open set, so anything unrecognised is shown rather than dropped.
+func notifyKind(detail string) string {
+	if detail == "" {
+		return ""
+	}
+	return " (" + detail + ")"
 }
 
 func buildAlertDetailContent(alert api.Alert, width int) string {
@@ -731,6 +764,16 @@ func (m Model) renderUserCreate() string {
 	return header +
 		usernameLabel + m.userFormInputs[0].View() + "\n" +
 		emailLabel + m.userFormInputs[1].View() + "\n"
+}
+
+func (m Model) renderUserNotifyEdit() string {
+	header := fmt.Sprintf("\n  Push notifications for %s\n", styleBold.Render(m.selectedUser.Username))
+	hint := line(styleMuted,
+		"  The ntfy topic this user's pages go to. Leave it empty to clear it —\n"+
+			"  their incidents then page the server's shared fallback topic, which\n"+
+			"  carries no Acknowledge button.")
+	label := styleSelected.Render("  Topic:  ")
+	return header + "\n" + hint + "\n" + label + m.ntfyTopicInput.View() + "\n"
 }
 
 func (m Model) renderAPIKeyMenu() string {

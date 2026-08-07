@@ -8,11 +8,11 @@ Written in Go using [Bubbletea](https://github.com/charmbracelet/bubbletea).
 
 - **Incident queue** — open incidents with severity, status, assignee and age, auto-refreshing
 - **Incident actions** — acknowledge, assign, snooze, note, resolve and archive
-- **Timeline** — the full history of an incident, system events and notes together
+- **Timeline** — the full history of an incident, system events, pages and notes together
 - **Alert feed** — the raw read-only alerts underneath, each linked to its incident
 - **On-call schedule** — visual calendar of who is on duty, assign and remove entries
 - **Statistics** — MTTA and MTTR, plus alert frequency by name, hour and day
-- **User management** — add and remove users, manage API keys
+- **User management** — add and remove users, manage API keys, set each user's ntfy topic
 
 > Requires terdut-server **v0.4.0 or later**. Earlier servers have no incidents API;
 > use terdut-tui v0.3.x with those.
@@ -36,6 +36,22 @@ Two behaviours worth knowing before you press a key:
   confirmation before doing it.
 - **Snooze is the "not now" button.** It hides an incident from the default queue
   without closing it, and expires on its own.
+
+## Push notifications
+
+When the server is configured for ntfy, an incident that opens pages whoever is
+on call. Each user has their own topic, shown as a column in the Users section
+and edited with `t`. A user with no topic falls back to the server's shared
+fallback topic, which carries **no Acknowledge button** — the topic is shared, so
+a button on it would let any subscriber acknowledge as somebody else.
+
+Every delivery lands on the incident's timeline: `Notified <user> (triggered)`
+when ntfy accepted the page, and `Notification to <user> failed` when it ran out
+of retries. That second one is the one to look for when nobody's phone rang.
+
+Editing topics needs terdut-server **v0.6.0 or later**; the timeline entries need
+**v0.7.0 or later**. Against an older server the topic column stays empty and
+editing one reports the server's 404.
 
 ## Installation
 
@@ -128,5 +144,6 @@ Users section:
 | Key | Action |
 |-----|--------|
 | `n` | Create a user |
+| `t` | Edit the user's ntfy topic — submit empty to clear it |
 | `d` | Delete a user |
 | `k` | API keys for the selected user |

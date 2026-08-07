@@ -83,6 +83,8 @@ func TestClient_IncidentEndpoints(t *testing.T) {
 			http.MethodDelete, "/api/incidents/7/notes/12", ""},
 		{"stats", func(c *Client) error { _, err := c.GetIncidentStats(); return err },
 			http.MethodGet, "/api/stats/incidents", ""},
+		{"set notify target", func(c *Client) error { _, err := c.SetUserNotifyTarget(7, "t"); return err },
+			http.MethodPut, "/api/users/7/notify", ""},
 	}
 
 	for _, tt := range tests {
@@ -163,6 +165,43 @@ func TestClient_RequestBodies(t *testing.T) {
 			t.Errorf("expected duration 90m, got %q", body.Duration)
 		}
 	})
+
+	t.Run("set notify target", func(t *testing.T) {
+		c, got := stub(t, http.StatusOK, `{}`)
+		if _, err := c.SetUserNotifyTarget(3, "terdut-niklas"); err != nil {
+			t.Fatalf("set notify target: %v", err)
+		}
+		if got.body != `{"ntfy_topic":"terdut-niklas"}` {
+			t.Errorf("unexpected body %q", got.body)
+		}
+	})
+
+	// Clearing has to put an explicit empty string on the wire: omitting the
+	// field would leave the topic untouched instead of removing it.
+	t.Run("clear notify target", func(t *testing.T) {
+		c, got := stub(t, http.StatusOK, `{}`)
+		if _, err := c.SetUserNotifyTarget(3, ""); err != nil {
+			t.Fatalf("clear notify target: %v", err)
+		}
+		if got.body != `{"ntfy_topic":""}` {
+			t.Errorf("expected an explicit empty topic, got %q", got.body)
+		}
+	})
+}
+
+func TestUser_TopicFlattensNilAndEmpty(t *testing.T) {
+	var users []User
+	if err := json.Unmarshal([]byte(
+		`[{"id":1,"username":"a"},{"id":2,"username":"b","ntfy_topic":""},
+		  {"id":3,"username":"c","ntfy_topic":"terdut-c"}]`), &users); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := []string{"", "", "terdut-c"}
+	for i, u := range users {
+		if got := u.Topic(); got != want[i] {
+			t.Errorf("user %d: expected topic %q, got %q", u.ID, want[i], got)
+		}
+	}
 }
 
 // The 409 on re-resolving is the server telling the user why nothing happened,

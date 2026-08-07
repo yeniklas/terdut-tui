@@ -40,6 +40,7 @@ const (
 	modeConfirm
 	modeUserPicker
 	modeUserCreate
+	modeUserNotifyEdit
 	modeAPIKeyMenu
 	modeAPIKeyCreate
 	modeAPIKeyReveal
@@ -224,6 +225,7 @@ type Model struct {
 	selectedUser      api.User
 	userFormInputs    [2]textinput.Model
 	userFormFocus     int
+	ntfyTopicInput    textinput.Model
 	apiKeyNameInput   textinput.Model
 	apiKeyRevokeInput textinput.Model
 	revealedAPIKey    api.APIKey
@@ -273,6 +275,10 @@ func NewModel(client *api.Client, serverURL string, refreshInterval time.Duratio
 	emailIn.Placeholder = "email"
 	emailIn.CharLimit = 128
 
+	topicIn := textinput.New()
+	topicIn.Placeholder = "ntfy topic — empty clears it"
+	topicIn.CharLimit = 128
+
 	keyNameIn := textinput.New()
 	keyNameIn.Placeholder = "key name (e.g. laptop)"
 	keyNameIn.CharLimit = 64
@@ -310,6 +316,7 @@ func NewModel(client *api.Client, serverURL string, refreshInterval time.Duratio
 		userPickerTable:   pickerT,
 		userManageTable:   manageT,
 		userFormInputs:    [2]textinput.Model{usernameIn, emailIn},
+		ntfyTopicInput:    topicIn,
 		apiKeyNameInput:   keyNameIn,
 		apiKeyRevokeInput: revokeIn,
 		help:              help.New(),
@@ -371,7 +378,11 @@ func (m *Model) rebuildUserManageTable() {
 	m.userManageTable.SetColumns(userManageColumns(m.width))
 	rows := make([]table.Row, len(m.users))
 	for i, u := range m.users {
-		rows[i] = table.Row{u.Username, u.Email, u.CreatedAt.UTC().Format("2006-01-02")}
+		topic := u.Topic()
+		if topic == "" {
+			topic = "—"
+		}
+		rows[i] = table.Row{u.Username, u.Email, topic, u.CreatedAt.UTC().Format("2006-01-02")}
 	}
 	m.userManageTable.SetRows(rows)
 	m.userManageTable.SetHeight(tableHeight(m.height, 10))
@@ -502,13 +513,16 @@ func userPickerColumns(width int) []table.Column {
 func userManageColumns(width int) []table.Column {
 	createdW := 12
 	usernameW := 25
-	emailW := width - usernameW - createdW - 8
+	topicW := 22
+	// 8 = bubbles' Padding(0, 1) on each of the four cells.
+	emailW := width - usernameW - topicW - createdW - 8
 	if emailW < 15 {
 		emailW = 15
 	}
 	return []table.Column{
 		{Title: "Username", Width: usernameW},
 		{Title: "Email", Width: emailW},
+		{Title: "Ntfy Topic", Width: topicW},
 		{Title: "Created", Width: createdW},
 	}
 }
@@ -899,6 +913,22 @@ func fetchUsersCmd(client *api.Client) tea.Cmd {
 func createUserCmd(client *api.Client, username, email string) tea.Cmd {
 	return func() tea.Msg {
 		if _, err := client.CreateUser(username, email); err != nil {
+			return userActionErrMsg{err}
+		}
+		users, err := client.ListUsers()
+		if err != nil {
+			return userActionErrMsg{err}
+		}
+		return usersFetchedMsg{users: users}
+	}
+}
+
+// setUserNotifyTargetCmd points a user's pages at a topic, or clears it when
+// topic is empty. It re-lists afterwards so the table shows what the server
+// stored rather than what was typed.
+func setUserNotifyTargetCmd(client *api.Client, userID int64, topic string) tea.Cmd {
+	return func() tea.Msg {
+		if _, err := client.SetUserNotifyTarget(userID, topic); err != nil {
 			return userActionErrMsg{err}
 		}
 		users, err := client.ListUsers()

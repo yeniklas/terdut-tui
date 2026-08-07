@@ -175,12 +175,50 @@ func TestEventLabel_KnownTypes(t *testing.T) {
 		{api.IncidentEvent{Type: api.EventResolved, Username: "bo"}, "Resolved by bo"},
 		// No user means the server closed it via the alert cascade.
 		{api.IncidentEvent{Type: api.EventResolved}, "all alerts stopped firing"},
+		{api.IncidentEvent{Type: api.EventNotified, Username: "bo", Detail: "triggered"},
+			"Notified bo (triggered)"},
+		{api.IncidentEvent{Type: api.EventNotified, Username: "bo", Detail: "reminder"},
+			"Notified bo (reminder)"},
+		// On a notification, no user means the shared fallback topic — not that
+		// the server acted on its own.
+		{api.IncidentEvent{Type: api.EventNotified, Detail: "triggered"},
+			"Notified the fallback topic (triggered)"},
+		{api.IncidentEvent{Type: api.EventNotifyFailed, Username: "bo", Detail: "triggered: ntfy returned 502"},
+			"Notification to bo failed"},
+		{api.IncidentEvent{Type: api.EventNotifyFailed, Detail: "triggered: no route to host"},
+			"Notification to the fallback topic failed"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.event.Type, func(t *testing.T) {
 			mustContain(t, eventLabel(tt.event), tt.want)
 		})
 	}
+}
+
+// The timeline is where a page that never landed becomes visible, so both
+// outcomes have to survive into the rendered pane.
+func TestIncidentDetail_RendersNotifications(t *testing.T) {
+	now := time.Now()
+	inc := api.Incident{ID: 1, Title: "DiskFull", Status: api.StatusTriggered, TriggeredAt: now}
+	timeline := []api.IncidentEvent{
+		{Type: api.EventTriggered, CreatedAt: now},
+		{Type: api.EventNotified, Username: "niklas", Detail: "triggered", CreatedAt: now},
+		{Type: api.EventNotifyFailed, Username: "niklas",
+			Detail: "reminder: ntfy returned 502", CreatedAt: now},
+	}
+
+	got := buildIncidentDetailContent(inc, timeline, -1, 120)
+	mustContain(t, got, "Notified niklas (triggered)", "Notification to niklas failed")
+}
+
+func TestUserNotifyEdit_SaysWhatAnEmptyValueDoes(t *testing.T) {
+	m := sized()
+	m.mode = modeUserNotifyEdit
+	m.selectedUser = api.User{ID: 1, Username: "niklas"}
+
+	mustContain(t, m.View(), "niklas", "empty to clear it", "fallback topic")
+	// The footer has to repeat it: that is where the reader looks for what a key does.
+	mustContain(t, m.renderFooter(), "empty clears the topic")
 }
 
 func TestAlertDetail_SaysItIsReadOnlyAndLinksTheIncident(t *testing.T) {
