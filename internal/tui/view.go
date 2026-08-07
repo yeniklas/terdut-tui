@@ -808,12 +808,19 @@ func renderBarWidth(count, maxCount, maxWidth int) int {
 	return w
 }
 
+// truncate shortens s to max terminal cells, marking the cut with an ellipsis.
+//
+// Counted in runes rather than bytes: these strings are laid out against
+// fixed-width columns, and a byte cut through a multi-byte rune would both
+// mis-measure the column and emit a broken character. Server-supplied text —
+// labels, annotations, delivery errors — is not guaranteed to be ASCII.
 func truncate(s string, max int) string {
 	if max < 1 {
 		return ""
 	}
-	if len(s) <= max {
+	r := []rune(s)
+	if len(r) <= max {
 		return s
 	}
-	return s[:max-1] + "…"
+	return string(r[:max-1]) + "…"
 }
