@@ -154,3 +154,6 @@ Users section:
 | `t` | Edit the user's ntfy topic — submit empty to clear it |
 | `d` | Delete a user |
 | `k` | API keys for the selected user |
+
+In Users, `k` and `d` act on the selected row, so move with `↑`/`↓` there rather
+than `k`.

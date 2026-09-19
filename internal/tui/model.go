@@ -2,9 +2,11 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -251,22 +253,26 @@ type Model struct {
 func NewModel(client *api.Client, serverURL string, refreshInterval time.Duration) Model {
 	ts := defaultTableStyles()
 
-	incidentT := table.New(table.WithFocused(true))
+	// Each table sees a key before the section's own handler does, so any
+	// key a section uses as an action must be taken out of that table's
+	// navigation bindings, or the cursor moves first and the action lands on
+	// a different row. See tableKeyMap.
+	incidentT := table.New(table.WithFocused(true), table.WithKeyMap(tableKeyMap("f")))
 	incidentT.SetStyles(ts)
 
-	alertT := table.New(table.WithFocused(true))
+	alertT := table.New(table.WithFocused(true), table.WithKeyMap(tableKeyMap("f")))
 	alertT.SetStyles(ts)
 
-	archivedT := table.New(table.WithFocused(true))
+	archivedT := table.New(table.WithFocused(true), table.WithKeyMap(tableKeyMap()))
 	archivedT.SetStyles(ts)
 
-	schedT := table.New(table.WithFocused(true))
+	schedT := table.New(table.WithFocused(true), table.WithKeyMap(tableKeyMap("d")))
 	schedT.SetStyles(ts)
 
-	pickerT := table.New(table.WithFocused(true))
+	pickerT := table.New(table.WithFocused(true), table.WithKeyMap(tableKeyMap()))
 	pickerT.SetStyles(ts)
 
-	manageT := table.New(table.WithFocused(true))
+	manageT := table.New(table.WithFocused(true), table.WithKeyMap(tableKeyMap("d", "k")))
 	manageT.SetStyles(ts)
 
 	// Sized by the first tea.WindowSizeMsg; built here so it carries the default
@@ -343,6 +349,31 @@ func (m Model) Init() tea.Cmd {
 }
 
 // ── Table rebuilders ───────────────────────────────────────────────────────
+
+// tableKeyMap is the bubbles table keymap without the given keys.
+//
+// The table's defaults claim several letters -- k up, d half a page down, f a
+// page down -- and the dashboard hands every key to the table before the
+// section's own handler reads the cursor. A letter that is both, like k for
+// API keys in Users, therefore moved the cursor and then acted on the row it
+// had moved to. Each table gives up the letters its section acts on; the
+// arrow keys and the rest of the defaults are untouched.
+func tableKeyMap(reserved ...string) table.KeyMap {
+	km := table.DefaultKeyMap()
+	for _, b := range []*key.Binding{
+		&km.LineUp, &km.LineDown, &km.PageUp, &km.PageDown,
+		&km.HalfPageUp, &km.HalfPageDown, &km.GotoTop, &km.GotoBottom,
+	} {
+		var keep []string
+		for _, k := range b.Keys() {
+			if !slices.Contains(reserved, k) {
+				keep = append(keep, k)
+			}
+		}
+		b.SetKeys(keep...)
+	}
+	return km
+}
 
 func defaultTableStyles() table.Styles {
 	s := table.DefaultStyles()
