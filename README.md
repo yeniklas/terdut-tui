@@ -154,6 +154,8 @@ Users section:
 | `t` | Edit the user's ntfy topic — submit empty to clear it |
 | `d` | Delete a user |
 | `k` | API keys for the selected user |
+| `p` | Set the selected user's web UI password — asks for the current one when it is your own |
 
 In Users, `k` and `d` act on the selected row, so move with `↑`/`↓` there rather
-than `k`.
+than `k`. Setting passwords needs terdut-server **v0.10.2 or later**, the first
+with a web UI.

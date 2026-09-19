@@ -37,6 +37,20 @@ func (c *Client) newRequest(method, path string) (*http.Request, error) {
 	return req, nil
 }
 
+// StatusError is a response the server answered with a 4xx or 5xx. Message is
+// the server's own {"error": ...} text, empty when the body carried none.
+type StatusError struct {
+	Code    int
+	Message string
+}
+
+func (e *StatusError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("server returned %d: %s", e.Code, e.Message)
+	}
+	return fmt.Sprintf("server returned %d", e.Code)
+}
+
 func (c *Client) do(req *http.Request, out any) error {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -49,10 +63,7 @@ func (c *Client) do(req *http.Request, out any) error {
 			Error string `json:"error"`
 		}
 		_ = json.NewDecoder(resp.Body).Decode(&e)
-		if e.Error != "" {
-			return fmt.Errorf("server returned %d: %s", resp.StatusCode, e.Error)
-		}
-		return fmt.Errorf("server returned %d", resp.StatusCode)
+		return &StatusError{Code: resp.StatusCode, Message: e.Error}
 	}
 
 	if out != nil {
@@ -446,6 +457,31 @@ func (c *Client) CreateAPIKey(userID int64, name string) (*APIKey, error) {
 
 func (c *Client) DeleteAPIKey(userID, keyID int64) error {
 	req, err := c.newRequest(http.MethodDelete, fmt.Sprintf("/api/users/%d/api-keys/%d", userID, keyID))
+	if err != nil {
+		return err
+	}
+	return c.do(req, nil)
+}
+
+// Me returns the user the API key belongs to, and whether they have a web UI
+// password. Needs terdut-server v0.10.2 or later; older servers answer 404.
+func (c *Client) Me() (*Me, error) {
+	req, err := c.newRequest(http.MethodGet, "/api/me")
+	if err != nil {
+		return nil, err
+	}
+	var me Me
+	return &me, c.do(req, &me)
+}
+
+// SetPassword sets a user's web UI password. current is only checked by the
+// server when a user changes their own existing password; pass "" otherwise.
+func (c *Client) SetPassword(userID int64, password, current string) error {
+	body := struct {
+		Password        string `json:"password"`
+		CurrentPassword string `json:"current_password,omitempty"`
+	}{Password: password, CurrentPassword: current}
+	req, err := c.newRequestWithBody(http.MethodPut, fmt.Sprintf("/api/users/%d/password", userID), body)
 	if err != nil {
 		return err
 	}

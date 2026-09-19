@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"time"
 
@@ -47,7 +49,20 @@ const (
 	modeAPIKeyCreate
 	modeAPIKeyReveal
 	modeAPIKeyRevokeByID
+	modePasswordSet
 )
+
+// Fields of the set-password form, in tab order.
+const (
+	pwCurrent = iota
+	pwNew
+	pwRepeat
+	pwFieldCount
+)
+
+// minPasswordLen mirrors the server's rule, so a short password is refused
+// here rather than after a round trip.
+const minPasswordLen = 10
 
 type confirmTarget int
 
@@ -138,6 +153,8 @@ type usersFetchedMsg struct{ users []api.User }
 type apiKeyCreatedMsg struct{ key api.APIKey }
 type apiKeyRevokedMsg struct{}
 type userActionErrMsg struct{ err error }
+type meFetchedMsg struct{ me api.Me }
+type passwordSetMsg struct{ username string }
 
 // ── Model ──────────────────────────────────────────────────────────────────
 
@@ -246,6 +263,15 @@ type Model struct {
 	apiKeyRevokeInput textinput.Model
 	revealedAPIKey    api.APIKey
 
+	// Set-password form. The current-password field is shown only when the
+	// target is the key's own user and already has a password, which is the
+	// one case the server asks for it; pwLoading covers the /api/me lookup
+	// that decides it.
+	pwInputs      [pwFieldCount]textinput.Model
+	pwFocus       int
+	pwNeedCurrent bool
+	pwLoading     bool
+
 	help help.Model
 	keys keyMap
 }
@@ -272,7 +298,7 @@ func NewModel(client *api.Client, serverURL string, refreshInterval time.Duratio
 	pickerT := table.New(table.WithFocused(true), table.WithKeyMap(tableKeyMap()))
 	pickerT.SetStyles(ts)
 
-	manageT := table.New(table.WithFocused(true), table.WithKeyMap(tableKeyMap("d", "k")))
+	manageT := table.New(table.WithFocused(true), table.WithKeyMap(tableKeyMap("d", "k", "p")))
 	manageT.SetStyles(ts)
 
 	// Sized by the first tea.WindowSizeMsg; built here so it carries the default
@@ -307,6 +333,15 @@ func NewModel(client *api.Client, serverURL string, refreshInterval time.Duratio
 	revokeIn.Placeholder = "integer key ID"
 	revokeIn.CharLimit = 20
 
+	var pwIn [pwFieldCount]textinput.Model
+	for i, placeholder := range [pwFieldCount]string{"current password", "new password (min. 10 characters)", "repeat new password"} {
+		pwIn[i] = textinput.New()
+		pwIn[i].Placeholder = placeholder
+		pwIn[i].EchoMode = textinput.EchoPassword
+		pwIn[i].EchoCharacter = '•'
+		pwIn[i].CharLimit = 72 // bcrypt's limit; the server refuses longer
+	}
+
 	now := time.Now().UTC()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	weekday := int(today.Weekday())
@@ -339,6 +374,7 @@ func NewModel(client *api.Client, serverURL string, refreshInterval time.Duratio
 		ntfyTopicInput:    topicIn,
 		apiKeyNameInput:   keyNameIn,
 		apiKeyRevokeInput: revokeIn,
+		pwInputs:          pwIn,
 		help:              help.New(),
 		keys:              keys,
 	}
@@ -1004,6 +1040,29 @@ func createAPIKeyCmd(client *api.Client, userID int64, name string) tea.Cmd {
 			return userActionErrMsg{err}
 		}
 		return apiKeyCreatedMsg{key: *key}
+	}
+}
+
+func fetchMeCmd(client *api.Client) tea.Cmd {
+	return func() tea.Msg {
+		me, err := client.Me()
+		var se *api.StatusError
+		if errors.As(err, &se) && se.Code == http.StatusNotFound {
+			return userActionErrMsg{errors.New("this server has no passwords -- needs terdut-server v0.10.2 or later")}
+		}
+		if err != nil {
+			return userActionErrMsg{err}
+		}
+		return meFetchedMsg{me: *me}
+	}
+}
+
+func setPasswordCmd(client *api.Client, user api.User, password, current string) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.SetPassword(user.ID, password, current); err != nil {
+			return userActionErrMsg{err}
+		}
+		return passwordSetMsg{username: user.Username}
 	}
 }
 

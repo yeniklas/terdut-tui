@@ -83,6 +83,8 @@ func (m Model) renderBody() string {
 		return m.renderAPIKeyReveal()
 	case modeAPIKeyRevokeByID:
 		return m.renderAPIKeyRevokeByID()
+	case modePasswordSet:
+		return m.renderPasswordSet()
 	default:
 		return m.renderDashboard()
 	}
@@ -144,6 +146,9 @@ func (m Model) renderFooter() string {
 	case modeAPIKeyRevokeByID:
 		return withStatus("  enter·revoke  esc·back")
 
+	case modePasswordSet:
+		return withStatus("  tab·next field  enter·set password  esc·cancel")
+
 	default:
 		switch m.activeSection {
 		case sectionIncidents:
@@ -157,7 +162,7 @@ func (m Model) renderFooter() string {
 		case sectionSchedule:
 			return withStatus("  +·assign day  W·assign week  d·del  ←/→·shift week  tab·section  r·refresh  q·quit")
 		case sectionUsers:
-			return withStatus("  n·new user  t·topic  d·delete  k·API keys  r·refresh  tab·section  q·quit")
+			return withStatus("  n·new user  t·topic  d·delete  k·API keys  p·password  r·refresh  tab·section  q·quit")
 		}
 		return "\n" + styleFooter.Render(m.help.ShortHelpView(m.keys.ShortHelp()))
 	}
@@ -808,6 +813,28 @@ func (m Model) renderUserNotifyEdit() string {
 			"  carries no Acknowledge button.")
 	label := styleSelected.Render("  Topic:  ")
 	return header + "\n" + hint + "\n" + label + m.ntfyTopicInput.View() + "\n"
+}
+
+func (m Model) renderPasswordSet() string {
+	header := fmt.Sprintf("\n  Web UI password for %s\n\n", styleBold.Render(m.selectedUser.Username))
+	if m.pwLoading {
+		return header + line(styleMuted, "  Checking who this key belongs to…")
+	}
+	labels := [pwFieldCount]string{
+		pwCurrent: "  Current password:  ",
+		pwNew:     "  New password:      ",
+		pwRepeat:  "  Repeat:            ",
+	}
+	var form string
+	for _, f := range m.pwFields() {
+		label := labels[f]
+		if f == m.pwFocus {
+			label = styleSelected.Render(label)
+		}
+		form += label + m.pwInputs[f].View() + "\n"
+	}
+	hint := fmt.Sprintf("  At least %d characters. Setting it signs %s out of every other\n  web UI session. API keys are not affected.", minPasswordLen, m.selectedUser.Username)
+	return header + form + "\n" + line(styleMuted, hint)
 }
 
 func (m Model) renderAPIKeyMenu() string {

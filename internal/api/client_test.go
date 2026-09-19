@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -361,5 +362,54 @@ func TestIncidentStats_NullAveragesStayNil(t *testing.T) {
 	}
 	if stats.MTTASeconds != nil || stats.MTTRSeconds != nil {
 		t.Errorf("expected nil averages, got %v / %v", stats.MTTASeconds, stats.MTTRSeconds)
+	}
+}
+
+func TestClient_Me(t *testing.T) {
+	c, got := stub(t, http.StatusOK, `{"user":{"id":3,"username":"erik"},"has_password":true}`)
+	me, err := c.Me()
+	if err != nil {
+		t.Fatalf("me: %v", err)
+	}
+	if got.method != http.MethodGet || got.path != "/api/me" {
+		t.Errorf("expected GET /api/me, got %s %s", got.method, got.path)
+	}
+	if me.User.ID != 3 || !me.HasPassword {
+		t.Errorf("unexpected decode %+v", me)
+	}
+}
+
+func TestClient_SetPassword(t *testing.T) {
+	c, got := stub(t, http.StatusNoContent, ``)
+	if err := c.SetPassword(2, "a brand new secret", ""); err != nil {
+		t.Fatalf("set password: %v", err)
+	}
+	if got.method != http.MethodPut || got.path != "/api/users/2/password" {
+		t.Errorf("expected PUT /api/users/2/password, got %s %s", got.method, got.path)
+	}
+	// Setting someone else's password carries no current_password at all,
+	// rather than an empty one.
+	if got.body != `{"password":"a brand new secret"}` {
+		t.Errorf("unexpected body %s", got.body)
+	}
+
+	c, got = stub(t, http.StatusNoContent, ``)
+	c.SetPassword(1, "a brand new secret", "the old one")
+	if !strings.Contains(got.body, `"current_password":"the old one"`) {
+		t.Errorf("current password missing from %s", got.body)
+	}
+}
+
+// Older servers have no /api/me; the caller tells that apart by the status
+// code, so the typed error has to carry it.
+func TestClient_StatusErrorKeepsCodeAndMessage(t *testing.T) {
+	c, _ := stub(t, http.StatusNotFound, `404 page not found`)
+	_, err := c.Me()
+	var se *StatusError
+	if !errors.As(err, &se) || se.Code != http.StatusNotFound {
+		t.Fatalf("expected a 404 StatusError, got %v", err)
+	}
+	if err.Error() != "server returned 404" {
+		t.Errorf("message changed: %q", err.Error())
 	}
 }

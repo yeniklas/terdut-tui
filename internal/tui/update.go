@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -167,8 +169,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = modeDashboard
 		return m, clearStatusCmd()
 
+	case meFetchedMsg:
+		if m.mode != modePasswordSet {
+			return m, nil // the form was closed before the lookup came back
+		}
+		m.pwLoading = false
+		m.pwNeedCurrent = msg.me.User.ID == m.selectedUser.ID && msg.me.HasPassword
+		m.pwFocus = pwNew
+		if m.pwNeedCurrent {
+			m.pwFocus = pwCurrent
+		}
+		m.pwInputs[m.pwFocus].Focus()
+		return m, nil
+
+	case passwordSetMsg:
+		m.statusMsg = "password set for " + msg.username + " -- their other web sessions were signed out"
+		return m, clearStatusCmd()
+
 	case userActionErrMsg:
 		m.usersLoading = false
+		m.pwLoading = false
+		m.blurPasswordForm()
 		m.statusMsg = "error: " + msg.err.Error()
 		m.mode = modeDashboard
 		return m, clearStatusCmd()
@@ -279,6 +300,14 @@ func (m Model) routeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case modeAPIKeyMenu, modeAPIKeyReveal:
 		return m.handleKey(msg)
 
+	case modePasswordSet:
+		var inputCmd tea.Cmd
+		if !m.pwLoading {
+			m.pwInputs[m.pwFocus], inputCmd = m.pwInputs[m.pwFocus].Update(msg)
+		}
+		m2, ourCmd := m.handleKey(msg)
+		return m2, tea.Batch(inputCmd, ourCmd)
+
 	default: // modeDashboard
 		if m.connected {
 			switch m.activeSection {
@@ -338,6 +367,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.handleUserNotifyEditKey(msg)
 	case modeAPIKeyMenu:
 		return m.handleAPIKeyMenuKey(msg)
+	case modePasswordSet:
+		return m.handlePasswordKey(msg)
 	case modeAPIKeyCreate:
 		return m.handleAPIKeyCreateKey(msg)
 	case modeAPIKeyReveal:
@@ -533,6 +564,26 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.selectedUser = m.users[cursor]
 		m.mode = modeAPIKeyMenu
 		return m, nil
+
+	case "p":
+		if m.activeSection != sectionUsers || !m.connected || len(m.users) == 0 {
+			return m, nil
+		}
+		cursor := m.userManageTable.Cursor()
+		if cursor >= len(m.users) {
+			return m, nil
+		}
+		m.selectedUser = m.users[cursor]
+		for i := range m.pwInputs {
+			m.pwInputs[i].Reset()
+			m.pwInputs[i].Blur()
+		}
+		m.pwNeedCurrent = false
+		m.pwLoading = true
+		m.mode = modePasswordSet
+		// Whether the form needs the current password depends on who the key
+		// belongs to, which the client does not otherwise know.
+		return m, fetchMeCmd(m.client)
 	}
 
 	return m, nil
@@ -1125,5 +1176,71 @@ func (m Model) handleAPIKeyRevokeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, deleteAPIKeyCmd(m.client, m.selectedUser.ID, keyID)
 	}
 
+	return m, nil
+}
+
+// ── Set password ──────────────────────────────────────────────────────────────
+
+// pwFields is the set-password form's fields in tab order.
+func (m Model) pwFields() []int {
+	if m.pwNeedCurrent {
+		return []int{pwCurrent, pwNew, pwRepeat}
+	}
+	return []int{pwNew, pwRepeat}
+}
+
+func (m *Model) blurPasswordForm() {
+	for i := range m.pwInputs {
+		m.pwInputs[i].Blur()
+	}
+}
+
+func (m Model) handlePasswordKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.blurPasswordForm()
+		m.pwLoading = false
+		m.mode = modeDashboard
+		return m, nil
+	}
+	if m.pwLoading {
+		return m, nil
+	}
+
+	switch msg.String() {
+	case "tab", "shift+tab":
+		fields := m.pwFields()
+		i := slices.Index(fields, m.pwFocus)
+		step := 1
+		if msg.String() == "shift+tab" {
+			step = len(fields) - 1
+		}
+		m.pwInputs[m.pwFocus].Blur()
+		m.pwFocus = fields[(i+step)%len(fields)]
+		m.pwInputs[m.pwFocus].Focus()
+		return m, nil
+
+	case "enter":
+		password := m.pwInputs[pwNew].Value()
+		switch {
+		case m.pwNeedCurrent && m.pwInputs[pwCurrent].Value() == "":
+			m.statusMsg = "enter your current password"
+			return m, clearStatusCmd()
+		case len(password) < minPasswordLen:
+			m.statusMsg = fmt.Sprintf("the password must be at least %d characters", minPasswordLen)
+			return m, clearStatusCmd()
+		case password != m.pwInputs[pwRepeat].Value():
+			m.statusMsg = "the two new passwords do not match"
+			return m, clearStatusCmd()
+		}
+		current := ""
+		if m.pwNeedCurrent {
+			current = m.pwInputs[pwCurrent].Value()
+		}
+		m.blurPasswordForm()
+		m.mode = modeDashboard
+		m.statusMsg = "Setting password…"
+		return m, setPasswordCmd(m.client, m.selectedUser, password, current)
+	}
 	return m, nil
 }

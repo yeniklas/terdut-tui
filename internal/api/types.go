@@ -182,6 +182,12 @@ func (u User) Topic() string {
 	return *u.NtfyTopic
 }
 
+// Me is GET /api/me: the caller, and whether they can sign in to the web UI.
+type Me struct {
+	User        User `json:"user"`
+	HasPassword bool `json:"has_password"`
+}
+
 type APIKey struct {
 	ID         int64      `json:"id"`
 	UserID     int64      `json:"user_id"`
